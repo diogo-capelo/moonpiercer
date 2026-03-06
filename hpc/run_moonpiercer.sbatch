@@ -35,13 +35,25 @@ MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-6}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
 ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-RESULTS_DIR="${PROJECT_DIR}/results/moonpiercer_run"
+# Use submission directory (or current directory) so outputs never resolve to
+# SLURM's spool copy path.
+SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+if [ -f "${SCRIPT_DIR}/hpc/manifest.py" ]; then
+    PROJECT_DIR="${SCRIPT_DIR}"
+    HPC_DIR="${SCRIPT_DIR}/hpc"
+elif [ -f "${SCRIPT_DIR}/manifest.py" ]; then
+    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    HPC_DIR="${SCRIPT_DIR}"
+else
+    echo "ERROR: Could not locate hpc/manifest.py from submit directory: ${SCRIPT_DIR}" >&2
+    exit 1
+fi
+
+RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_run"
 MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
-LOG_DIR="${PROJECT_DIR}/results/slurm_logs"
+LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 
 # Ensure MOONPIERCER package is importable
 export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
@@ -74,7 +86,7 @@ MANIFEST_JOB_ID=$(sbatch \
     --time=06:00:00 \
     --mem=4G \
     --cpus-per-task="$MAX_WORKERS" \
-    --wrap="python ${SCRIPT_DIR}/manifest.py \
+        --wrap="python ${HPC_DIR}/manifest.py \
         --manifest-path ${MANIFEST_PATH} \
         --max-chips ${MAX_CHIPS} \
         --sweep-grid-step-deg ${GRID_STEP} \
@@ -113,7 +125,7 @@ while [ "$REMAINING" -gt 0 ]; do
         --mem=4G \
         --cpus-per-task=1 \
         --array="${OFFSET}-${ARRAY_END}" \
-        --wrap="python ${SCRIPT_DIR}/chip_worker.py \
+        --wrap="python ${HPC_DIR}/chip_worker.py \
             --manifest-path ${MANIFEST_PATH} \
             --output-dir ${CHIP_RESULTS_DIR} \
             --chip-size-px 1024 \
@@ -147,7 +159,7 @@ GLOBAL_JOB_ID=$(sbatch \
     --time=12:00:00 \
     --mem=16G \
     --cpus-per-task=4 \
-    --wrap="python ${SCRIPT_DIR}/global_aggregation.py \
+    --wrap="python ${HPC_DIR}/global_aggregation.py \
         --chip-results-dir ${CHIP_RESULTS_DIR} \
         --output-dir ${GLOBAL_OUTPUT_DIR} \
         --random-trials ${RANDOM_TRIALS} \
