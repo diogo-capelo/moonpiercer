@@ -385,6 +385,26 @@ def main() -> int:
         flush=True,
     )
 
+    # Guard: noise-floor detections.  On uniform / low-contrast images the
+    # LoG cube is pure noise with tiny responses.  A low adaptive threshold
+    # (peak_quantile=0.9994 → <<0.01 on noise) signals that no real craters
+    # exist, even when the image had enough pixel variation to pass the
+    # blank-image check above.
+    MIN_LOG_THRESHOLD = 0.01
+    if threshold < MIN_LOG_THRESHOLD:
+        print(
+            f"[chip_worker] WARNING: LoG threshold ({threshold:.6g}) below floor "
+            f"({MIN_LOG_THRESHOLD}) for chip {chip_index}. "
+            f"Image is likely featureless. Saving empty outputs.",
+            file=sys.stderr,
+        )
+        _save_empty(
+            chip_dir, chip_index, product_id, center_lon, center_lat,
+            bbox=bbox, status="noise_floor",
+        )
+        _print_timing(t_start, chip_index, n_craters=0, status="noise_floor")
+        return 0
+
     # ---------------------------------------------------- freshness index
     if not detections.empty:
         t_fresh = time.perf_counter()
