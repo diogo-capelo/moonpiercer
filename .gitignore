@@ -1,0 +1,8 @@
+# SLURM output
+slurm_logs/
+
+# WMS disk cache (can be 25+ GB)
+cache/
+
+# HPC results
+results/

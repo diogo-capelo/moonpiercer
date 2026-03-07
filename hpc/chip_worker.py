@@ -315,6 +315,22 @@ def main() -> int:
         _print_timing(t_start, chip_index, n_craters=0, status="chip_download_failed")
         return 0
 
+    # Guard: blank / uniform NAC images produce only noise-floor LoG
+    # detections (identical strength, radius, zero depth_proxy & freshness).
+    chip_std = float(np.std(gray))
+    if chip_std < 1e-4:
+        print(
+            f"[chip_worker] WARNING: NAC chip is blank/uniform for chip {chip_index} "
+            f"(std={chip_std:.6g}). No real craters possible. Saving empty outputs.",
+            file=sys.stderr,
+        )
+        _save_empty(
+            chip_dir, chip_index, product_id, center_lon, center_lat,
+            bbox=bbox, status="blank_chip",
+        )
+        _print_timing(t_start, chip_index, n_craters=0, status="blank_chip")
+        return 0
+
     # ---------------------------------------------------- metres per pixel
     mpp_x, mpp_y = bbox_mpp(
         bbox=bbox,

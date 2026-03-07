@@ -427,7 +427,14 @@ def run(args: argparse.Namespace) -> int:
         save_dataframe(pairs_scored, all_pairs_path)
     else:
         # Write an empty CSV so downstream scripts always find the file
-        pd.DataFrame().to_csv(all_pairs_path, index=False)
+        pd.DataFrame(columns=[
+            "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
+            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
+            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "p_value", "bh_significant",
+        ]).to_csv(all_pairs_path, index=False)
     print(f"  Saved: {all_pairs_path}")
 
     # 9b: significant pairs only
@@ -435,7 +442,14 @@ def run(args: argparse.Namespace) -> int:
     if not significant_pairs.empty:
         save_dataframe(significant_pairs, sig_pairs_path)
     else:
-        pd.DataFrame().to_csv(sig_pairs_path, index=False)
+        pd.DataFrame(columns=[
+            "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
+            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
+            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "p_value", "bh_significant",
+        ]).to_csv(sig_pairs_path, index=False)
     print(f"  Saved: {sig_pairs_path}")
 
     # 9c: null best scores (binary NumPy array)

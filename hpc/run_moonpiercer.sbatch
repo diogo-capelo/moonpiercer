@@ -23,6 +23,7 @@
 #   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 6)
 #   MOONPIERCER_RANDOM_TRIALS  — null model MC trials (default: 2000)
 #   MOONPIERCER_ARRAY_SIZE     — max SLURM array size (default: 999)
+#   MOONPIERCER_CACHE_DIR      — WMS disk cache directory (default: ./cache)
 #
 # See hpc/setup_env.sh for environment overrides.
 ###############################################################################
@@ -59,8 +60,9 @@ MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
+CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
-mkdir -p "$LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR"
+mkdir -p "$LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
 
 # ─── Environment bootstrap ────────────────────────────────────────────────
 
@@ -79,6 +81,7 @@ echo "Grid step:      $GRID_STEP deg"
 echo "Max workers:    $MAX_WORKERS"
 echo "Random trials:  $RANDOM_TRIALS"
 echo "Array size:     $ARRAY_SIZE"
+echo "Cache dir:      $CACHE_DIR"
 echo "Python bin:     $PYTHON_BIN"
 echo "================================================================"
 
@@ -108,7 +111,8 @@ MANIFEST_JOB_ID=$(sbatch \
         --lon-min-deg -180.0 \
         --lon-max-deg 180.0 \
         --min-lat-deg -85.0 \
-        --max-lat-deg 85.0
+        --max-lat-deg 85.0 \
+        --cache-dir "${CACHE_DIR}"
 )
 
 echo "  Manifest job submitted: $MANIFEST_JOB_ID"
@@ -146,7 +150,8 @@ while [ "$REMAINING" -gt 0 ]; do
             --manifest-path "${MANIFEST_PATH}" \
             --output-dir "${CHIP_RESULTS_DIR}" \
             --chip-size-px 1024 \
-            --chip-span-m 1200.0
+            --chip-span-m 1200.0 \
+            --cache-dir "${CACHE_DIR}"
     )
 
     echo "  Chip array job submitted: $CHIP_JOB_ID (indices ${OFFSET}-${ARRAY_END})"
