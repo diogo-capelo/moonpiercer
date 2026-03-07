@@ -185,7 +185,7 @@ GLOBAL_JOB_ID=$(sbatch \
     --error="${LOG_DIR}/global_%j.err" \
     --time=48:00:00 \
     --mem=32G \
-    --cpus-per-task=4 \
+    --cpus-per-task=8 \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
         --chip-results-dir "${CHIP_RESULTS_DIR}" \
         --output-dir "${GLOBAL_OUTPUT_DIR}" \
@@ -193,6 +193,7 @@ GLOBAL_JOB_ID=$(sbatch \
         --random-seed 42 \
         --fdr-alpha 0.05 \
         --top-pairs 50 \
+        --null-model-workers 8 \
         --save-pair-images
 )
 

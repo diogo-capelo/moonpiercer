@@ -83,6 +83,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Random seed for reproducibility.",
     )
     parser.add_argument(
+        "--null-model-workers",
+        type=int,
+        default=1,
+        metavar="W",
+        help="Parallel processes for null-model trials (default: 1 = sequential).",
+    )
+    parser.add_argument(
         "--fdr-alpha",
         type=float,
         default=0.05,
@@ -286,6 +293,7 @@ def run(args: argparse.Namespace) -> int:
     random_seed: int = args.random_seed
     fdr_alpha: float = args.fdr_alpha
     top_pairs: int = args.top_pairs
+    null_model_workers: int = args.null_model_workers
 
     # ------------------------------------------------------------------
     # Validate inputs
@@ -369,7 +377,8 @@ def run(args: argparse.Namespace) -> int:
     # Step 6: null model
     # ------------------------------------------------------------------
     _print_section(
-        f"Running null model ({random_trials:,d} trials, seed={random_seed})"
+        f"Running null model ({random_trials:,d} trials, seed={random_seed}, "
+        f"workers={null_model_workers})"
     )
     t_null_start = time.monotonic()
     null_scores = null_model_best_scores(
@@ -377,6 +386,7 @@ def run(args: argparse.Namespace) -> int:
         config=config,
         n_trials=random_trials,
         seed=random_seed,
+        n_workers=null_model_workers,
     )
     t_null_elapsed = time.monotonic() - t_null_start
     print(f"  Null model completed in {t_null_elapsed:.1f} s")

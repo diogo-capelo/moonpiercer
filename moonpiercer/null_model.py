@@ -12,6 +12,9 @@ We test this by:
 
 from __future__ import annotations
 
+import multiprocessing
+import sys
+
 import numpy as np
 import pandas as pd
 
@@ -83,7 +86,36 @@ def _random_positions_on_sphere(
 
 
 # ======================================================================
-# Monte Carlo null model
+# Monte Carlo null model — parallel worker helpers
+# ======================================================================
+
+# Module-level state set by _init_null_worker() in each Pool child.
+_WK_CRATERS: pd.DataFrame | None = None
+_WK_CONFIG: ChordConfig | None = None
+
+
+def _init_null_worker(craters: pd.DataFrame, config: ChordConfig) -> None:
+    """Initialiser called once per Pool worker process."""
+    global _WK_CRATERS, _WK_CONFIG  # noqa: PLW0603
+    _WK_CRATERS = craters
+    _WK_CONFIG = config
+
+
+def _run_null_trial(child_seed: np.random.SeedSequence) -> float:
+    """Execute a single null-model trial (called inside a worker)."""
+    assert _WK_CRATERS is not None and _WK_CONFIG is not None
+    rng = np.random.default_rng(child_seed)
+    n = len(_WK_CRATERS)
+    rand_lon, rand_lat = _random_positions_on_sphere(n, rng)
+    random_cat = _WK_CRATERS.copy()
+    random_cat["lon_deg"] = rand_lon
+    random_cat["lat_deg"] = rand_lat
+    pairs = build_chord_pairs(random_cat, _WK_CONFIG)
+    return float(pairs["score"].max()) if len(pairs) > 0 else 0.0
+
+
+# ======================================================================
+# Monte Carlo null model — entry point
 # ======================================================================
 
 def null_model_best_scores(
@@ -91,6 +123,7 @@ def null_model_best_scores(
     config: ChordConfig | None = None,
     n_trials: int | None = None,
     seed: int | None = None,
+    n_workers: int | None = None,
 ) -> np.ndarray:
     """Run the null model and return the best score from each trial.
 
@@ -103,6 +136,9 @@ def null_model_best_scores(
         Number of Monte Carlo trials (default: config.random_trials).
     seed : int, optional
         Random seed (default: config.random_seed).
+    n_workers : int, optional
+        Number of parallel processes (default: config.null_model_workers).
+        Set to 1 for sequential execution.
 
     Returns
     -------
@@ -115,25 +151,45 @@ def null_model_best_scores(
         n_trials = config.random_trials
     if seed is None:
         seed = config.random_seed
+    if n_workers is None:
+        n_workers = config.null_model_workers
 
-    rng = np.random.default_rng(seed)
-    n = len(craters)
-    best_scores = np.zeros(n_trials, dtype=np.float64)
+    # Derive independent per-trial RNG streams from a single parent seed.
+    child_seeds = np.random.SeedSequence(seed).spawn(n_trials)
 
-    for trial in range(n_trials):
-        # Randomise positions, keep attributes
-        rand_lon, rand_lat = _random_positions_on_sphere(n, rng)
-        random_cat = craters.copy()
-        random_cat["lon_deg"] = rand_lon
-        random_cat["lat_deg"] = rand_lat
+    if n_workers <= 1:
+        # ── Sequential path ──────────────────────────────────────────
+        n = len(craters)
+        best_scores = np.zeros(n_trials, dtype=np.float64)
+        for trial, cs in enumerate(child_seeds):
+            rng = np.random.default_rng(cs)
+            rand_lon, rand_lat = _random_positions_on_sphere(n, rng)
+            random_cat = craters.copy()
+            random_cat["lon_deg"] = rand_lon
+            random_cat["lat_deg"] = rand_lat
 
-        pairs = build_chord_pairs(random_cat, config)
-        if len(pairs) > 0:
-            best_scores[trial] = pairs["score"].max()
-        else:
-            best_scores[trial] = 0.0
+            pairs = build_chord_pairs(random_cat, config)
+            if len(pairs) > 0:
+                best_scores[trial] = pairs["score"].max()
+            else:
+                best_scores[trial] = 0.0
+        return best_scores
 
-    return best_scores
+    # ── Parallel path ────────────────────────────────────────────────
+    print(
+        f"[null_model] Running {n_trials:,} trials across {n_workers} workers ...",
+        file=sys.stderr,
+        flush=True,
+    )
+    chunksize = max(1, n_trials // (4 * n_workers))
+    with multiprocessing.Pool(
+        processes=n_workers,
+        initializer=_init_null_worker,
+        initargs=(craters, config),
+    ) as pool:
+        results = pool.map(_run_null_trial, child_seeds, chunksize=chunksize)
+
+    return np.array(results, dtype=np.float64)
 
 
 def empirical_p_value(

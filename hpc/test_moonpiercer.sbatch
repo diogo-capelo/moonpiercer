@@ -168,6 +168,7 @@ GLOBAL_JOB_ID=$(sbatch \
         --random-seed 42 \
         --fdr-alpha 0.05 \
         --top-pairs 20 \
+        --null-model-workers 4 \
         --save-pair-images
 )
 
