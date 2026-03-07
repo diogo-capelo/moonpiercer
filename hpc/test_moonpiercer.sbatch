@@ -106,8 +106,8 @@ MANIFEST_JOB_ID=$(sbatch \
         --max-requests-per-second 2.0 \
         --lon-min-deg -180.0 \
         --lon-max-deg 180.0 \
-        --min-lat-deg -85.0 \
-        --max-lat-deg 85.0 \
+        --min-lat-deg -60.0 \
+        --max-lat-deg 60.0 \
         --cache-dir "${CACHE_DIR}"
 )
 
