@@ -91,6 +91,34 @@ pip install -e ".[dev]"   # includes pytest
 pytest tests/
 ```
 
+## HPC Environment Setup
+
+The sbatch scripts rely on the cluster's module system (`module load python`)
+to provide a Python interpreter with the scientific stack (numpy, scipy, pandas,
+matplotlib, Pillow, requests, PyYAML). This is the same approach used by the
+predecessor pipeline and avoids architecture mismatches on heterogeneous
+clusters.
+
+### Prerequisites
+
+The cluster's `python` module must provide Python ≥ 3.10 with the required
+packages. If any are missing, install them once from a login node:
+
+```bash
+module load python
+pip install --user numpy scipy pandas matplotlib Pillow requests PyYAML
+pip install --user -e .   # moonpiercer itself
+```
+
+### Environment variable overrides
+
+All optional:
+
+| Variable | Description |
+|---|---|
+| `MOONPIERCER_PYTHON_BIN` | Skip detection; use this Python interpreter directly |
+| `MOONPIERCER_PROJECT_DIR` | Project root (for PYTHONPATH) |
+
 ## HPC Submission
 
 Two sbatch scripts are provided for SLURM clusters:
@@ -163,8 +191,9 @@ methodology-only figures if not.
 ```
 moonpiercer/
 ├── hpc/
-│   ├── test_pipeline.sbatch     # Quick test (20 chips)
-│   ├── full_pipeline.sbatch     # Full production run (2000 chips)
+│   ├── setup_env.sh             # Environment bootstrap (spack + venv)
+│   ├── test_moonpiercer.sbatch  # Quick test (20 chips)
+│   ├── run_moonpiercer.sbatch   # Full production run (2000 chips)
 │   ├── manifest.py              # Stage 1: build chip manifest
 │   ├── chip_worker.py           # Stage 2: per-chip crater detection
 │   └── global_aggregation.py    # Stage 3: pairing, null model, significance
