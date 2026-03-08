@@ -102,7 +102,7 @@ MANIFEST_JOB_ID=$(sbatch \
     --job-name=mp_f_manifest \
     --output="${LOG_DIR}/manifest_%j.out" \
     --error="${LOG_DIR}/manifest_%j.err" \
-    --time=08:00:00 \
+    --time=24:00:00 \
     --mem=8G \
     --cpus-per-task="$MAX_WORKERS" \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/manifest.py" \
@@ -145,7 +145,7 @@ while [ "$REMAINING" -gt 0 ]; do
         --job-name=mp_f_chip \
         --output="${LOG_DIR}/chip_%A_%a.out" \
         --error="${LOG_DIR}/chip_%A_%a.err" \
-        --time=02:00:00 \
+        --time=05:00:00 \
         --mem=4G \
         --cpus-per-task=1 \
         --array="${OFFSET}-${ARRAY_END}" \
@@ -183,7 +183,7 @@ GLOBAL_JOB_ID=$(sbatch \
     --job-name=mp_f_global \
     --output="${LOG_DIR}/global_%j.out" \
     --error="${LOG_DIR}/global_%j.err" \
-    --time=48:00:00 \
+    --time=72:00:00 \
     --mem=32G \
     --cpus-per-task=8 \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
@@ -209,7 +209,7 @@ CLEANUP_JOB_ID=$(sbatch \
     --job-name=mp_f_cleanup \
     --output=/dev/null \
     --error=/dev/null \
-    --time=00:05:00 \
+    --time=00:15:00 \
     --mem=256M \
     --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && echo 'Cleaned empty .err files'"
 )
