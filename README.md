@@ -18,7 +18,7 @@ The pipeline runs in three stages, orchestrated as dependent SLURM jobs:
 
 **Script:** `hpc/manifest.py`
 
-Sweeps the full lunar sphere on a configurable lon/lat grid (default 2° step,
+Sweeps the full lunar sphere on a configurable lon/lat grid (default 1.5° step,
 latitudes ±85°), querying the Lunar Mapping and Modeling Portal WMS for NAC
 observation metadata. Deduplicates by `product_id`, keeping the
 highest-resolution observation per location. Performs stratified spatial
@@ -30,7 +30,8 @@ listing up to `max_chips` chips sorted by resolution.
 
 ### Stage 2 — Chip Processing
 
-**Script:** `hpc/chip_worker.py` (one invocation per chip, via SLURM array jobs)
+**Script:** `hpc/chip_worker.py` (via SLURM array job; each task may process
+multiple chips when the total exceeds the array size limit)
 
 For each manifest row:
 
@@ -121,7 +122,7 @@ All optional:
 
 ## HPC Submission
 
-Two sbatch scripts are provided for SLURM clusters:
+Four sbatch scripts are provided for SLURM clusters:
 
 ### Quick Test
 
@@ -133,30 +134,57 @@ analysis notebook. Takes roughly 1–2 hours end-to-end.
 sbatch hpc/test_moonpiercer.sbatch
 ```
 
-### Full Production Run
+### Standard Run
 
-Runs the full pipeline (2000 chips, 2000 null-model trials) with maximum
-parallelisation. Chip processing is split into SLURM array batches of up to 999
-tasks each. Typical wall time: 12–24 hours depending on cluster load and WMS
-response times.
-
-# Usage:
+Runs the pipeline with configurable chip counts (default 2000). Suitable for
+exploratory runs and intermediate-scale searches.
 
 ```bash
-sbatch sbatch hpc/run_moonpiercer.sbatch --max-chips 2000 --random-trials 2000
+sbatch hpc/run_moonpiercer.sbatch
 ```
 
-Override parameters via environment variables:
-   MOONPIERCER_MAX_CHIPS      — max chips in manifest (default: 2000)
-   MOONPIERCER_GRID_STEP      — sweep grid step in degrees (default: 2.0)
-   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 6)
-   MOONPIERCER_RANDOM_TRIALS  — null model MC trials (default: 2000)
-   MOONPIERCER_ARRAY_SIZE     — max SLURM array size (default: 999)
+### Full-Coverage Run
+
+Maximum-coverage production run (15,000 chips, 1.5° grid, 2,000 MC trials).
+Chip processing is distributed across a single SLURM array job of up to 999
+tasks, with each task processing multiple chips sequentially
+(`ceil(15000 / 999) = 16` chips per task). Typical wall time: ~70 hours
+end-to-end.
+
+```bash
+sbatch hpc/full_run_moonpiercer.sbatch
+```
+
+### Resume Run
+
+Resumes a pipeline from an existing manifest, skipping Stage 1. Useful when the
+manifest completed but chip processing or aggregation failed. Results are
+written into the same folder.
+
+```bash
+sbatch hpc/resume_moonpiercer.sbatch results/moonpiercer_full_run
+```
+
+The actual chip count is read directly from the manifest CSV, so no
+`MOONPIERCER_MAX_CHIPS` override is needed.
+
+### Environment Variable Overrides
+
+All optional. Apply to `run_moonpiercer.sbatch` and `full_run_moonpiercer.sbatch`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MOONPIERCER_MAX_CHIPS` | 15000 (full), 2000 (standard) | Max chips in manifest |
+| `MOONPIERCER_GRID_STEP` | 1.5 (full), 2.0 (standard) | Sweep grid step in degrees |
+| `MOONPIERCER_MAX_WORKERS` | 8 (full), 6 (standard) | Manifest build thread count |
+| `MOONPIERCER_RANDOM_TRIALS` | 2000 | Null model MC trials |
+| `MOONPIERCER_ARRAY_SIZE` | 999 | Max SLURM array size |
+| `MOONPIERCER_CACHE_DIR` | `./cache` | WMS disk cache directory |
 
 Example with overrides:
 
 ```bash
-MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/full_pipeline.sbatch
+MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/run_moonpiercer.sbatch
 ```
 
 ### Monitoring
@@ -173,8 +201,8 @@ View logs:
 # Manifest stage
 cat results/slurm_logs/manifest_<JOBID>.out
 
-# Individual chip
-cat results/slurm_logs/chip_<JOBID>_<TASKID>.out
+# Chip processing (in dedicated subfolder)
+cat results/slurm_logs/chip_logs/chip_<JOBID>_<TASKID>.out
 
 # Global aggregation
 cat results/slurm_logs/global_<JOBID>.out
@@ -191,12 +219,14 @@ methodology-only figures if not.
 ```
 moonpiercer/
 ├── hpc/
-│   ├── setup_env.sh             # Environment bootstrap (spack + venv)
-│   ├── test_moonpiercer.sbatch  # Quick test (20 chips)
-│   ├── run_moonpiercer.sbatch   # Full production run (2000 chips)
-│   ├── manifest.py              # Stage 1: build chip manifest
-│   ├── chip_worker.py           # Stage 2: per-chip crater detection
-│   └── global_aggregation.py    # Stage 3: pairing, null model, significance
+│   ├── setup_env.sh                 # Environment bootstrap (module + venv)
+│   ├── test_moonpiercer.sbatch      # Quick test (20 chips)
+│   ├── run_moonpiercer.sbatch       # Standard run (2000 chips)
+│   ├── full_run_moonpiercer.sbatch  # Full-coverage run (15000 chips)
+│   ├── resume_moonpiercer.sbatch    # Resume from existing manifest
+│   ├── manifest.py                  # Stage 1: build chip manifest
+│   ├── chip_worker.py               # Stage 2: per-chip crater detection
+│   └── global_aggregation.py        # Stage 3: pairing, null model, significance
 ├── moonpiercer/                 # Core library
 │   ├── config.py                # ChordConfig dataclass
 │   ├── constants.py             # Physical constants
@@ -214,5 +244,7 @@ moonpiercer/
 │   └── analysis.ipynb           # Post-run analysis and figure generation
 ├── plots/                       # Output figures (pdf/, png/)
 ├── results/                     # Pipeline outputs
+│   └── slurm_logs/
+│       └── chip_logs/           # Chip array task logs (separate subfolder)
 └── pyproject.toml               # Package metadata and dependencies
 ```
