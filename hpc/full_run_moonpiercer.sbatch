@@ -14,7 +14,7 @@
 #
 # Three-stage SLURM pipeline:
 #   Stage 1: Build global chip manifest (single node, threaded)       ~4 h
-#   Stage 2: Process chips (array jobs, batched to max 999 per array) ~7-12 h
+#   Stage 2: Process chips (single array, multi-chip per task)        ~7-12 h
 #   Stage 3: Global aggregation + null model (single node)            ~9-20 h
 #
 # Usage:
@@ -63,9 +63,10 @@ MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
+CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
-mkdir -p "$LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
+mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
 
 # ─── Environment bootstrap ────────────────────────────────────────────────
 
@@ -120,54 +121,44 @@ MANIFEST_JOB_ID=$(sbatch \
 
 echo "  Manifest job submitted: $MANIFEST_JOB_ID"
 
-# ─── Stage 2: Chip Processing (Array Jobs) ──────────────────────────────────
+# ─── Stage 2: Chip Processing (Array Job) ───────────────────────────────────
 
 echo ""
-echo "[Stage 2] Submitting chip processing array jobs..."
+echo "[Stage 2] Submitting chip processing array job..."
 echo ""
 
-# Split into batches of at most ARRAY_SIZE tasks.  All batches depend on the
-# manifest job and can run concurrently across the cluster.
+# Distribute MAX_CHIPS across at most ARRAY_SIZE array tasks.
+# Each task processes ceil(MAX_CHIPS / ARRAY_SIZE) chips sequentially.
+CHIPS_PER_TASK=$(( (MAX_CHIPS + ARRAY_SIZE - 1) / ARRAY_SIZE ))
+N_TASKS=$(( (MAX_CHIPS + CHIPS_PER_TASK - 1) / CHIPS_PER_TASK ))
+ARRAY_END=$((N_TASKS - 1))
 
-REMAINING=$MAX_CHIPS
-OFFSET=0
-CHIP_JOB_IDS=""
+echo "  Chips per task: $CHIPS_PER_TASK"
+echo "  Number of array tasks: $N_TASKS (array 0-${ARRAY_END})"
 
-while [ "$REMAINING" -gt 0 ]; do
-    BATCH_SIZE=$((REMAINING < ARRAY_SIZE ? REMAINING : ARRAY_SIZE))
-    ARRAY_END=$((OFFSET + BATCH_SIZE - 1))
+CHIP_JOB_ID=$(sbatch \
+    --parsable \
+    --export=ALL \
+    --dependency=afterok:${MANIFEST_JOB_ID} \
+    --kill-on-invalid-dep=yes \
+    --job-name=mp_f_chip \
+    --output="${CHIP_LOG_DIR}/chip_%A_%a.out" \
+    --error="${CHIP_LOG_DIR}/chip_%A_%a.err" \
+    --time=10:00:00 \
+    --mem=4G \
+    --cpus-per-task=1 \
+    --array="0-${ARRAY_END}" \
+    "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/chip_worker.py" \
+        --manifest-path "${MANIFEST_PATH}" \
+        --output-dir "${CHIP_RESULTS_DIR}" \
+        --chip-size-px 1024 \
+        --chip-span-m 1200.0 \
+        --cache-dir "${CACHE_DIR}" \
+        --chips-per-task "${CHIPS_PER_TASK}" \
+        --total-chips "${MAX_CHIPS}"
+)
 
-    CHIP_JOB_ID=$(sbatch \
-        --parsable \
-        --export=ALL \
-        --dependency=afterok:${MANIFEST_JOB_ID} \
-        --kill-on-invalid-dep=yes \
-        --job-name=mp_f_chip \
-        --output="${LOG_DIR}/chip_%A_%a.out" \
-        --error="${LOG_DIR}/chip_%A_%a.err" \
-        --time=05:00:00 \
-        --mem=4G \
-        --cpus-per-task=1 \
-        --array="${OFFSET}-${ARRAY_END}" \
-        "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/chip_worker.py" \
-            --manifest-path "${MANIFEST_PATH}" \
-            --output-dir "${CHIP_RESULTS_DIR}" \
-            --chip-size-px 1024 \
-            --chip-span-m 1200.0 \
-            --cache-dir "${CACHE_DIR}"
-    )
-
-    echo "  Chip array job submitted: $CHIP_JOB_ID (indices ${OFFSET}-${ARRAY_END})"
-
-    if [ -n "$CHIP_JOB_IDS" ]; then
-        CHIP_JOB_IDS="${CHIP_JOB_IDS}:${CHIP_JOB_ID}"
-    else
-        CHIP_JOB_IDS="$CHIP_JOB_ID"
-    fi
-
-    OFFSET=$((OFFSET + BATCH_SIZE))
-    REMAINING=$((REMAINING - BATCH_SIZE))
-done
+echo "  Chip array job submitted: $CHIP_JOB_ID (${N_TASKS} tasks × ${CHIPS_PER_TASK} chips/task)"
 
 # ─── Stage 3: Global Aggregation ────────────────────────────────────────────
 
@@ -178,7 +169,7 @@ echo ""
 GLOBAL_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
-    --dependency=afterok:${CHIP_JOB_IDS} \
+    --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_f_global \
     --output="${LOG_DIR}/global_%j.out" \
@@ -211,14 +202,14 @@ CLEANUP_JOB_ID=$(sbatch \
     --error=/dev/null \
     --time=00:15:00 \
     --mem=256M \
-    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && echo 'Cleaned empty .err files'"
+    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
 )
 
 echo ""
 echo "================================================================"
 echo "Full-coverage pipeline submitted:"
 echo "  Stage 1 (manifest):    $MANIFEST_JOB_ID"
-echo "  Stage 2 (chips):       $CHIP_JOB_IDS"
+echo "  Stage 2 (chips):       $CHIP_JOB_ID"
 echo "  Stage 3 (aggregation): $GLOBAL_JOB_ID"
 echo "  Cleanup:               $CLEANUP_JOB_ID"
 echo ""

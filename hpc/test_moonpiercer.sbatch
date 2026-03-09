@@ -57,9 +57,10 @@ MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
+CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
-mkdir -p "$LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
+mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
 
 # ─── Environment bootstrap ────────────────────────────────────────────────
 
@@ -127,8 +128,8 @@ CHIP_JOB_ID=$(sbatch \
     --dependency=afterok:${MANIFEST_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_t_chip \
-    --output="${LOG_DIR}/chip_%A_%a.out" \
-    --error="${LOG_DIR}/chip_%A_%a.err" \
+    --output="${CHIP_LOG_DIR}/chip_%A_%a.out" \
+    --error="${CHIP_LOG_DIR}/chip_%A_%a.err" \
     --time=01:00:00 \
     --mem=4G \
     --cpus-per-task=1 \
@@ -186,7 +187,7 @@ CLEANUP_JOB_ID=$(sbatch \
     --error=/dev/null \
     --time=00:05:00 \
     --mem=256M \
-    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && echo 'Cleaned empty .err files'"
+    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
 )
 
 echo ""

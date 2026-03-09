@@ -1,36 +1,38 @@
 #!/bin/bash
-#SBATCH --job-name=moonpiercer
-#SBATCH --output=results/slurm_logs/moonpiercer_%j.out
-#SBATCH --error=results/slurm_logs/moonpiercer_%j.err
-#SBATCH --time=48:00:00
-#SBATCH --mem=8G
-#SBATCH --cpus-per-task=4
+#SBATCH --job-name=mp_resume
+#SBATCH --output=results/slurm_logs/mp_resume_%j.out
+#SBATCH --error=results/slurm_logs/mp_resume_%j.err
+#SBATCH --time=00:30:00
+#SBATCH --mem=2G
+#SBATCH --cpus-per-task=2
 
 ###############################################################################
-# MOONPIERCER — Full Chord PBH Lunar Crater Search Pipeline
+# MOONPIERCER — Resume pipeline from an existing manifest
 #
-# Three-stage SLURM pipeline:
-#   Stage 1: Build global chip manifest (single node, threaded)
-#   Stage 2: Process chips (array jobs, batched to max 999 per array)
-#   Stage 3: Global aggregation (single node)
+# Skips Stage 1 (manifest build) and runs Stage 2 (chips) + Stage 3
+# (aggregation) + cleanup.  Results are written into the same folder that
+# contains the manifest.
 #
 # Usage:
-#   sbatch hpc/run_moonpiercer.sbatch
+#   sbatch hpc/resume_moonpiercer.sbatch <results-dir>
 #
-# Override parameters via environment variables:
-#   MOONPIERCER_MAX_CHIPS      — max chips in manifest (default: 2000)
-#   MOONPIERCER_GRID_STEP      — sweep grid step in degrees (default: 2.0)
-#   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 6)
+# Example:
+#   sbatch hpc/resume_moonpiercer.sbatch results/moonpiercer_full_run
+#
+# The actual chip count is read from the manifest CSV, so no MAX_CHIPS
+# override is needed.  Other environment overrides still apply:
 #   MOONPIERCER_RANDOM_TRIALS  — null model MC trials (default: 2000)
 #   MOONPIERCER_ARRAY_SIZE     — max SLURM array size (default: 999)
 #   MOONPIERCER_CACHE_DIR      — WMS disk cache directory (default: ./cache)
-#
-# See hpc/setup_env.sh for environment overrides.
 ###############################################################################
 
 set -euo pipefail
 
-# ─── Paths ──────────────────────────────────────────────────────────────────
+# ─── Arguments ───────────────────────────────────────────────────────────────
+
+RESULTS_DIR="${1:?Usage: sbatch hpc/resume_moonpiercer.sbatch <results-dir>}"
+
+# ─── Paths ───────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 if [ -f "${SCRIPT_DIR}/hpc/manifest.py" ]; then
@@ -47,15 +49,9 @@ fi
 export MOONPIERCER_PROJECT_DIR="${PROJECT_DIR}"
 export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
 
-# ─── Configuration ──────────────────────────────────────────────────────────
+# Resolve RESULTS_DIR to absolute path
+RESULTS_DIR="$(cd "$RESULTS_DIR" && pwd)"
 
-MAX_CHIPS="${MOONPIERCER_MAX_CHIPS:-2000}"
-GRID_STEP="${MOONPIERCER_GRID_STEP:-2.0}"
-MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-6}"
-RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
-ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
-
-RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_run"
 MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
@@ -63,9 +59,29 @@ LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
-mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
+# ─── Verify manifest ────────────────────────────────────────────────────────
 
-# ─── Environment bootstrap ────────────────────────────────────────────────
+if [ ! -f "$MANIFEST_PATH" ]; then
+    echo "ERROR: No manifest found at ${MANIFEST_PATH}" >&2
+    echo "       Run full_run_moonpiercer.sbatch first, or check the path." >&2
+    exit 1
+fi
+
+# Read actual chip count from the manifest (lines minus header)
+TOTAL_CHIPS=$(( $(wc -l < "$MANIFEST_PATH") - 1 ))
+if [ "$TOTAL_CHIPS" -le 0 ]; then
+    echo "ERROR: Manifest appears empty (${TOTAL_CHIPS} data rows)." >&2
+    exit 1
+fi
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
+ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
+
+mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
+
+# ─── Environment bootstrap ──────────────────────────────────────────────────
 
 # shellcheck disable=SC1091
 . "${HPC_DIR}/setup_env.sh"
@@ -73,61 +89,26 @@ mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_
 # ─── Banner ─────────────────────────────────────────────────────────────────
 
 echo "================================================================"
-echo "MOONPIERCER Full Chord Pipeline"
+echo "MOONPIERCER Resume Pipeline (from existing manifest)"
 echo "================================================================"
 echo "Project dir:    $PROJECT_DIR"
 echo "Results dir:    $RESULTS_DIR"
-echo "Max chips:      $MAX_CHIPS"
-echo "Grid step:      $GRID_STEP deg"
-echo "Max workers:    $MAX_WORKERS"
+echo "Manifest:       $MANIFEST_PATH"
+echo "Total chips:    $TOTAL_CHIPS"
 echo "Random trials:  $RANDOM_TRIALS"
 echo "Array size:     $ARRAY_SIZE"
 echo "Cache dir:      $CACHE_DIR"
 echo "Python bin:     $PYTHON_BIN"
 echo "================================================================"
 
-# ─── Stage 1: Build Manifest ────────────────────────────────────────────────
-# Child jobs run setup_env.sh as a script file (not --wrap) so that sbatch
-# initialises the shell properly and `module load python` works.
+# ─── Stage 2: Chip Processing (Array Job) ───────────────────────────────────
 
 echo ""
-echo "[Stage 1] Building global chip manifest..."
+echo "[Stage 2] Submitting chip processing array job..."
 echo ""
 
-MANIFEST_JOB_ID=$(sbatch \
-    --parsable \
-    --export=ALL \
-    --job-name=mp_manifest \
-    --output="${LOG_DIR}/manifest_%j.out" \
-    --error="${LOG_DIR}/manifest_%j.err" \
-    --time=06:00:00 \
-    --mem=4G \
-    --cpus-per-task="$MAX_WORKERS" \
-    "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/manifest.py" \
-        --manifest-path "${MANIFEST_PATH}" \
-        --max-chips "${MAX_CHIPS}" \
-        --sweep-grid-step-deg "${GRID_STEP}" \
-        --max-workers "${MAX_WORKERS}" \
-        --max-requests-per-second 2.0 \
-        --lon-min-deg -180.0 \
-        --lon-max-deg 180.0 \
-        --min-lat-deg -85.0 \
-        --max-lat-deg 85.0 \
-        --cache-dir "${CACHE_DIR}"
-)
-
-echo "  Manifest job submitted: $MANIFEST_JOB_ID"
-
-# ─── Stage 2: Chip Processing (Array Jobs) ──────────────────────────────────
-
-echo ""
-echo "[Stage 2] Submitting chip processing array jobs..."
-echo ""
-
-# Distribute MAX_CHIPS across at most ARRAY_SIZE array tasks.
-# Each task processes ceil(MAX_CHIPS / ARRAY_SIZE) chips sequentially.
-CHIPS_PER_TASK=$(( (MAX_CHIPS + ARRAY_SIZE - 1) / ARRAY_SIZE ))
-N_TASKS=$(( (MAX_CHIPS + CHIPS_PER_TASK - 1) / CHIPS_PER_TASK ))
+CHIPS_PER_TASK=$(( (TOTAL_CHIPS + ARRAY_SIZE - 1) / ARRAY_SIZE ))
+N_TASKS=$(( (TOTAL_CHIPS + CHIPS_PER_TASK - 1) / CHIPS_PER_TASK ))
 ARRAY_END=$((N_TASKS - 1))
 
 echo "  Chips per task: $CHIPS_PER_TASK"
@@ -136,12 +117,10 @@ echo "  Number of array tasks: $N_TASKS (array 0-${ARRAY_END})"
 CHIP_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
-    --dependency=afterok:${MANIFEST_JOB_ID} \
-    --kill-on-invalid-dep=yes \
-    --job-name=mp_chip \
+    --job-name=mp_r_chip \
     --output="${CHIP_LOG_DIR}/chip_%A_%a.out" \
     --error="${CHIP_LOG_DIR}/chip_%A_%a.err" \
-    --time=01:00:00 \
+    --time=10:00:00 \
     --mem=4G \
     --cpus-per-task=1 \
     --array="0-${ARRAY_END}" \
@@ -152,7 +131,7 @@ CHIP_JOB_ID=$(sbatch \
         --chip-span-m 1200.0 \
         --cache-dir "${CACHE_DIR}" \
         --chips-per-task "${CHIPS_PER_TASK}" \
-        --total-chips "${MAX_CHIPS}"
+        --total-chips "${TOTAL_CHIPS}"
 )
 
 echo "  Chip array job submitted: $CHIP_JOB_ID (${N_TASKS} tasks × ${CHIPS_PER_TASK} chips/task)"
@@ -168,12 +147,12 @@ GLOBAL_JOB_ID=$(sbatch \
     --export=ALL \
     --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
-    --job-name=mp_global \
+    --job-name=mp_r_global \
     --output="${LOG_DIR}/global_%j.out" \
     --error="${LOG_DIR}/global_%j.err" \
-    --time=12:00:00 \
-    --mem=16G \
-    --cpus-per-task=4 \
+    --time=72:00:00 \
+    --mem=32G \
+    --cpus-per-task=8 \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
         --chip-results-dir "${CHIP_RESULTS_DIR}" \
         --output-dir "${GLOBAL_OUTPUT_DIR}" \
@@ -181,7 +160,7 @@ GLOBAL_JOB_ID=$(sbatch \
         --random-seed 42 \
         --fdr-alpha 0.05 \
         --top-pairs 50 \
-        --null-model-workers 4 \
+        --null-model-workers 8 \
         --save-pair-images
 )
 
@@ -194,19 +173,20 @@ CLEANUP_JOB_ID=$(sbatch \
     --export=ALL \
     --dependency=afterany:${GLOBAL_JOB_ID} \
     --kill-on-invalid-dep=yes \
-    --job-name=mp_cleanup \
+    --job-name=mp_r_cleanup \
     --output=/dev/null \
     --error=/dev/null \
-    --time=00:05:00 \
+    --time=00:15:00 \
     --mem=256M \
     --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
 )
 
 echo ""
 echo "================================================================"
-echo "Pipeline submitted:"
-echo "  Stage 1 (manifest):    $MANIFEST_JOB_ID"
+echo "Resume pipeline submitted:"
 echo "  Stage 2 (chips):       $CHIP_JOB_ID"
 echo "  Stage 3 (aggregation): $GLOBAL_JOB_ID"
 echo "  Cleanup:               $CLEANUP_JOB_ID"
+echo ""
+echo "Monitor with:  squeue -u \$USER"
 echo "================================================================"

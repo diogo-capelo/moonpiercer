@@ -1,11 +1,15 @@
-"""HPC chip worker — processes a single chip from the manifest.
+"""HPC chip worker — processes one or more chips from the manifest.
 
 Called as a SLURM array task:
 
     python hpc/chip_worker.py \
         --manifest-path results/manifest.csv \
         --output-dir   results/chips \
-        --chip-index   ${SLURM_ARRAY_TASK_ID}
+        --chips-per-task 16 \
+        --total-chips 15000
+
+When --chips-per-task > 1, the SLURM_ARRAY_TASK_ID is a *task* index and
+each task processes chips [task_id * chips_per_task, ...) up to --total-chips.
 
 For each chip the script:
   1. Reads the manifest row matching --chip-index (manifest_index column).
@@ -120,6 +124,23 @@ def parse_args() -> argparse.Namespace:
         help="Per-request HTTP timeout in seconds.",
     )
 
+    # Multi-chip mode (used when MAX_CHIPS > ARRAY_SIZE)
+    parser.add_argument(
+        "--chips-per-task",
+        type=int,
+        default=1,
+        help=(
+            "Number of chips each array task processes.  "
+            "chip indices = [task_id * chips_per_task, ..., (task_id+1) * chips_per_task - 1]."
+        ),
+    )
+    parser.add_argument(
+        "--total-chips",
+        type=int,
+        default=None,
+        help="Total number of chips in the manifest.  Prevents tasks from exceeding bounds.",
+    )
+
     # Output control
     parser.add_argument(
         "--save-annotated",
@@ -204,35 +225,20 @@ def save_annotated_image(
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> int:
+def process_chip(
+    args: argparse.Namespace,
+    chip_index: int,
+    manifest: pd.DataFrame,
+    config: "ChordConfig",
+    client: "WMSClient",
+) -> int:
+    """Process a single chip identified by *chip_index* (manifest_index).
+
+    Returns 0 on success (including empty-chip cases), 1 on fatal error.
+    """
     t_start = time.perf_counter()
 
-    # ------------------------------------------------------------------ args
-    args = parse_args()
-
-    try:
-        chip_index = resolve_chip_index(args.chip_index)
-    except ValueError as exc:
-        print(f"[chip_worker] ERROR: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"[chip_worker] chip_index={chip_index}", flush=True)
-
-    # ------------------------------------------------------------ load manifest
-    manifest_path = Path(args.manifest_path)
-    if not manifest_path.exists():
-        print(f"[chip_worker] ERROR: manifest not found: {manifest_path}", file=sys.stderr)
-        return 1
-
-    manifest = pd.read_csv(manifest_path)
-
-    if "manifest_index" not in manifest.columns:
-        print(
-            "[chip_worker] ERROR: manifest CSV must contain a 'manifest_index' column.",
-            file=sys.stderr,
-        )
-        return 1
-
+    # ------------------------------------------------------------ manifest lookup
     matching = manifest[manifest["manifest_index"] == chip_index]
     if matching.empty:
         print(
@@ -247,7 +253,7 @@ def main() -> int:
     center_lat  = float(row["center_lat"])
 
     print(
-        f"[chip_worker] product_id={product_id} "
+        f"[chip_worker] chip_index={chip_index}  product_id={product_id} "
         f"center=({center_lon:.4f}, {center_lat:.4f})",
         flush=True,
     )
@@ -255,23 +261,6 @@ def main() -> int:
     # ------------------------------------------------- output directory
     chip_dir = Path(args.output_dir) / f"chip_{chip_index:04d}"
     chip_dir.mkdir(parents=True, exist_ok=True)
-
-    # ----------------------------------------- build config + WMS client
-    config = ChordConfig(
-        cache_dir=Path(args.cache_dir),
-        use_http_cache=not bool(args.no_http_cache),
-        request_timeout_s=int(args.request_timeout_s),
-        chip_size_px=int(args.chip_size_px),
-        chip_span_m=float(args.chip_span_m),
-        lola_tile_size_px=int(args.lola_tile_size_px),
-    )
-
-    client = WMSClient(
-        base_url=config.wms_base_url,
-        cache_dir=config.cache_dir,
-        use_cache=config.use_http_cache,
-        timeout_s=config.request_timeout_s,
-    )
 
     # --------------------------------------------------------- bounding box
     bbox = make_bbox_around_point(
@@ -385,11 +374,7 @@ def main() -> int:
         flush=True,
     )
 
-    # Guard: noise-floor detections.  On uniform / low-contrast images the
-    # LoG cube is pure noise with tiny responses.  A low adaptive threshold
-    # (peak_quantile=0.9994 → <<0.01 on noise) signals that no real craters
-    # exist, even when the image had enough pixel variation to pass the
-    # blank-image check above.
+    # Guard: noise-floor detections.
     MIN_LOG_THRESHOLD = 0.01
     if threshold < MIN_LOG_THRESHOLD:
         print(
@@ -478,6 +463,94 @@ def main() -> int:
 
     _print_timing(t_start, chip_index, n_craters=len(detections), status="ok")
     return 0
+
+
+def main() -> int:
+    t_main = time.perf_counter()
+
+    # ------------------------------------------------------------------ args
+    args = parse_args()
+
+    try:
+        task_id = resolve_chip_index(args.chip_index)
+    except ValueError as exc:
+        print(f"[chip_worker] ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    # ----------------------------------------- compute chip range for this task
+    chips_per_task = args.chips_per_task
+    total_chips = args.total_chips
+
+    start_chip = task_id * chips_per_task
+    end_chip = start_chip + chips_per_task
+    if total_chips is not None:
+        end_chip = min(end_chip, total_chips)
+
+    if total_chips is not None and start_chip >= total_chips:
+        print(
+            f"[chip_worker] Task {task_id}: no chips in range "
+            f"(start={start_chip} >= total={total_chips}). Nothing to do.",
+            flush=True,
+        )
+        return 0
+
+    chip_indices = list(range(start_chip, end_chip))
+    print(
+        f"[chip_worker] Task {task_id}: processing {len(chip_indices)} chip(s) "
+        f"[{chip_indices[0]}..{chip_indices[-1]}]",
+        flush=True,
+    )
+
+    # --------------------------------------------------------- load manifest once
+    manifest_path = Path(args.manifest_path)
+    if not manifest_path.exists():
+        print(f"[chip_worker] ERROR: manifest not found: {manifest_path}", file=sys.stderr)
+        return 1
+
+    manifest = pd.read_csv(manifest_path)
+
+    if "manifest_index" not in manifest.columns:
+        print(
+            "[chip_worker] ERROR: manifest CSV must contain a 'manifest_index' column.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # ----------------------------------------- build config + WMS client once
+    config = ChordConfig(
+        cache_dir=Path(args.cache_dir),
+        use_http_cache=not bool(args.no_http_cache),
+        request_timeout_s=int(args.request_timeout_s),
+        chip_size_px=int(args.chip_size_px),
+        chip_span_m=float(args.chip_span_m),
+        lola_tile_size_px=int(args.lola_tile_size_px),
+    )
+
+    client = WMSClient(
+        base_url=config.wms_base_url,
+        cache_dir=config.cache_dir,
+        use_cache=config.use_http_cache,
+        timeout_s=config.request_timeout_s,
+    )
+
+    # ---------------------------------------------------- process each chip
+    n_ok = 0
+    n_fail = 0
+    for chip_index in chip_indices:
+        rc = process_chip(args, chip_index, manifest, config, client)
+        if rc == 0:
+            n_ok += 1
+        else:
+            n_fail += 1
+
+    elapsed = time.perf_counter() - t_main
+    print(
+        f"[chip_worker] Task {task_id} DONE: {n_ok} ok, {n_fail} failed "
+        f"out of {len(chip_indices)} chips  elapsed={elapsed:.1f}s",
+        flush=True,
+    )
+    # Only fail the task if every chip failed
+    return 1 if n_ok == 0 and n_fail > 0 else 0
 
 
 # ---------------------------------------------------------------------------
