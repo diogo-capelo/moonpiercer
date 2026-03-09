@@ -83,6 +83,10 @@ mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$C
 
 # ─── Environment bootstrap ──────────────────────────────────────────────────
 
+# Clear positional parameters so that setup_env.sh (which checks $# to
+# distinguish "sourced" from "executed as script") does not try to exec $1.
+set --
+
 # shellcheck disable=SC1091
 . "${HPC_DIR}/setup_env.sh"
 
