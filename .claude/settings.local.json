@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -c \"D:/Astrophysics/GitHub/pbh_lunar_crater_analysis/cache/wms/\"*.bin)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \":*)",
+      "Bash(xxd \"D:/Astrophysics/GitHub/moonpiercer/results/moonpiercer_run/global/all_pairs_scored.csv\")"
+    ]
+  }
+}

@@ -12,6 +12,9 @@ The pairing engine uses a **shape-directed chord search** strategy:
 
 from __future__ import annotations
 
+import sys
+import time
+
 import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
@@ -168,6 +171,7 @@ def _predict_search_center(
 def build_chord_pairs(
     craters: pd.DataFrame,
     config: ChordConfig | None = None,
+    progress_interval_sec: float | None = None,
 ) -> pd.DataFrame:
     """Find and score crater pairs using shape-directed chord search.
 
@@ -217,6 +221,10 @@ def build_chord_pairs(
     seen_pairs: set[tuple[int, int]] = set()
 
     min_chord_sep_rad = np.deg2rad(config.min_chord_sep_deg)
+
+    use_progress = progress_interval_sec is not None and progress_interval_sec > 0
+    t_start = time.monotonic()
+    next_report = t_start + progress_interval_sec if use_progress else None
 
     for i in range(n):
         # Skip craters that don't meet freshness/depth threshold
@@ -311,6 +319,18 @@ def build_chord_pairs(
                     "ellipticity_b": float(ellip[j]),
                     **result,
                 })
+
+        if next_report is not None and time.monotonic() >= next_report:
+            done = i + 1
+            elapsed = time.monotonic() - t_start
+            rate = done / elapsed if elapsed > 0 else 0.0
+            print(
+                f"[pairing] {done}/{n} craters ({done / n:.1%}) "
+                f"elapsed={elapsed:.1f}s rate={rate:.2f}/s",
+                file=sys.stderr,
+                flush=True,
+            )
+            next_report = time.monotonic() + progress_interval_sec
 
     if not pairs_list:
         return pd.DataFrame()

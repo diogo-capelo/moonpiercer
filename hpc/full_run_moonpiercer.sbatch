@@ -26,6 +26,9 @@
 #   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 8)
 #   MOONPIERCER_RANDOM_TRIALS  — null model MC trials (default: 2000)
 #   MOONPIERCER_ARRAY_SIZE     — max SLURM array size (default: 999)
+#   MOONPIERCER_NULL_WORKERS   — multiprocessing workers per null chunk (default: 1)
+#   MOONPIERCER_PROGRESS_INTERVAL_SEC — progress log interval (default: 300)
+#   MOONPIERCER_RESUME         — set to 1 to resume from checkpoints
 #   MOONPIERCER_CACHE_DIR      — WMS disk cache directory (default: ./cache)
 #
 # See hpc/setup_env.sh for environment overrides.
@@ -57,11 +60,18 @@ GRID_STEP="${MOONPIERCER_GRID_STEP:-1.5}"
 MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-8}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
 ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
+NULL_WORKERS="${MOONPIERCER_NULL_WORKERS:-1}"
+PROGRESS_INTERVAL_SEC="${MOONPIERCER_PROGRESS_INTERVAL_SEC:-300}"
+RESUME_FLAG=""
+if [ "${MOONPIERCER_RESUME:-0}" -eq 1 ]; then
+    RESUME_FLAG="--resume"
+fi
 
 RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_full_run"
 MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
+CHECKPOINT_DIR="${GLOBAL_OUTPUT_DIR}/checkpoints"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
@@ -85,6 +95,9 @@ echo "Grid step:      $GRID_STEP deg"
 echo "Max workers:    $MAX_WORKERS"
 echo "Random trials:  $RANDOM_TRIALS"
 echo "Array size:     $ARRAY_SIZE"
+echo "Null chunks req:$ARRAY_SIZE"
+echo "Null workers:   $NULL_WORKERS"
+echo "Progress (sec): $PROGRESS_INTERVAL_SEC"
 echo "Cache dir:      $CACHE_DIR"
 echo "Python bin:     $PYTHON_BIN"
 echo "================================================================"
@@ -163,39 +176,114 @@ echo "  Chip array job submitted: $CHIP_JOB_ID (${N_TASKS} tasks × ${CHIPS_PER_
 # ─── Stage 3: Global Aggregation ────────────────────────────────────────────
 
 echo ""
-echo "[Stage 3] Submitting global aggregation job..."
+echo "[Stage 3a] Submitting global aggregation prep..."
 echo ""
 
-GLOBAL_JOB_ID=$(sbatch \
+PREP_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
     --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
-    --job-name=mp_f_global \
-    --output="${LOG_DIR}/global_%j.out" \
-    --error="${LOG_DIR}/global_%j.err" \
-    --time=72:00:00 \
+    --job-name=mp_f_prep \
+    --output="${LOG_DIR}/global_prep_%j.out" \
+    --error="${LOG_DIR}/global_prep_%j.err" \
+    --time=24:00:00 \
     --mem=32G \
     --cpus-per-task=8 \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
+        --mode prep \
         --chip-results-dir "${CHIP_RESULTS_DIR}" \
         --output-dir "${GLOBAL_OUTPUT_DIR}" \
+        --checkpoint-dir "${CHECKPOINT_DIR}" \
         --random-trials "${RANDOM_TRIALS}" \
         --random-seed 42 \
         --fdr-alpha 0.05 \
         --top-pairs 50 \
-        --null-model-workers 8 \
-        --save-pair-images
+        --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
+        ${RESUME_FLAG}
 )
 
-echo "  Global aggregation job submitted: $GLOBAL_JOB_ID"
+echo "  Prep job submitted: $PREP_JOB_ID"
+
+NULL_CHUNK_COUNT="${ARRAY_SIZE}"
+if [ "${NULL_CHUNK_COUNT}" -lt 1 ]; then
+    NULL_CHUNK_COUNT=1
+fi
+if [ "${NULL_CHUNK_COUNT}" -gt "${RANDOM_TRIALS}" ]; then
+    NULL_CHUNK_COUNT="${RANDOM_TRIALS}"
+fi
+NULL_ARRAY_END=$((NULL_CHUNK_COUNT - 1))
+
+echo ""
+echo "[Stage 3b] Submitting null-model array (${NULL_CHUNK_COUNT} chunks)..."
+echo ""
+
+NULL_JOB_ID=$(sbatch \
+    --parsable \
+    --export=ALL \
+    --dependency=afterok:${PREP_JOB_ID} \
+    --kill-on-invalid-dep=yes \
+    --job-name=mp_f_null \
+    --output="${LOG_DIR}/null_%A_%a.out" \
+    --error="${LOG_DIR}/null_%A_%a.err" \
+    --time=24:00:00 \
+    --mem=32G \
+    --cpus-per-task="${NULL_WORKERS}" \
+    --array="0-${NULL_ARRAY_END}" \
+    "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
+        --mode null \
+        --chip-results-dir "${CHIP_RESULTS_DIR}" \
+        --output-dir "${GLOBAL_OUTPUT_DIR}" \
+        --checkpoint-dir "${CHECKPOINT_DIR}" \
+        --random-trials "${RANDOM_TRIALS}" \
+        --random-seed 42 \
+        --fdr-alpha 0.05 \
+        --top-pairs 50 \
+        --null-model-workers "${NULL_WORKERS}" \
+        --null-chunk-count "${NULL_CHUNK_COUNT}" \
+        --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
+        ${RESUME_FLAG}
+)
+
+echo "  Null-model array submitted: $NULL_JOB_ID"
+
+echo ""
+echo "[Stage 3c] Submitting final aggregation..."
+echo ""
+
+FINAL_JOB_ID=$(sbatch \
+    --parsable \
+    --export=ALL \
+    --dependency=afterok:${NULL_JOB_ID} \
+    --kill-on-invalid-dep=yes \
+    --job-name=mp_f_final \
+    --output="${LOG_DIR}/global_final_%j.out" \
+    --error="${LOG_DIR}/global_final_%j.err" \
+    --time=12:00:00 \
+    --mem=16G \
+    --cpus-per-task=4 \
+    "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
+        --mode final \
+        --chip-results-dir "${CHIP_RESULTS_DIR}" \
+        --output-dir "${GLOBAL_OUTPUT_DIR}" \
+        --checkpoint-dir "${CHECKPOINT_DIR}" \
+        --random-trials "${RANDOM_TRIALS}" \
+        --random-seed 42 \
+        --fdr-alpha 0.05 \
+        --top-pairs 50 \
+        --null-chunk-count "${NULL_CHUNK_COUNT}" \
+        --save-pair-images \
+        ${RESUME_FLAG}
+)
+
+echo "  Final aggregation job submitted: $FINAL_JOB_ID"
 
 # ─── Cleanup ────────────────────────────────────────────────────────────────
 
 CLEANUP_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
-    --dependency=afterany:${GLOBAL_JOB_ID} \
+    --dependency=afterany:${FINAL_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_f_cleanup \
     --output=/dev/null \
@@ -210,7 +298,9 @@ echo "================================================================"
 echo "Full-coverage pipeline submitted:"
 echo "  Stage 1 (manifest):    $MANIFEST_JOB_ID"
 echo "  Stage 2 (chips):       $CHIP_JOB_ID"
-echo "  Stage 3 (aggregation): $GLOBAL_JOB_ID"
+echo "  Stage 3a (prep):       $PREP_JOB_ID"
+echo "  Stage 3b (null):       $NULL_JOB_ID"
+echo "  Stage 3c (final):      $FINAL_JOB_ID"
 echo "  Cleanup:               $CLEANUP_JOB_ID"
 echo ""
 echo "Monitor with:  squeue -u \$USER"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -114,6 +115,14 @@ def _run_null_trial(child_seed: np.random.SeedSequence) -> float:
     return float(pairs["score"].max()) if len(pairs) > 0 else 0.0
 
 
+def _run_null_trial_indexed(
+    args: tuple[int, np.random.SeedSequence],
+) -> tuple[int, float]:
+    """Execute a single null-model trial and return (index, score)."""
+    idx, child_seed = args
+    return idx, _run_null_trial(child_seed)
+
+
 # ======================================================================
 # Monte Carlo null model — entry point
 # ======================================================================
@@ -124,6 +133,9 @@ def null_model_best_scores(
     n_trials: int | None = None,
     seed: int | None = None,
     n_workers: int | None = None,
+    trial_offset: int = 0,
+    trial_count: int | None = None,
+    progress_interval_sec: float | None = None,
 ) -> np.ndarray:
     """Run the null model and return the best score from each trial.
 
@@ -139,6 +151,12 @@ def null_model_best_scores(
     n_workers : int, optional
         Number of parallel processes (default: config.null_model_workers).
         Set to 1 for sequential execution.
+    trial_offset : int, optional
+        Starting trial index (for chunked runs).
+    trial_count : int, optional
+        Number of trials to run from trial_offset.
+    progress_interval_sec : float, optional
+        Emit progress logs every N seconds (None/<=0 disables).
 
     Returns
     -------
@@ -153,14 +171,29 @@ def null_model_best_scores(
         seed = config.random_seed
     if n_workers is None:
         n_workers = config.null_model_workers
+    if trial_offset < 0:
+        raise ValueError("trial_offset must be non-negative.")
 
     # Derive independent per-trial RNG streams from a single parent seed.
     child_seeds = np.random.SeedSequence(seed).spawn(n_trials)
+    if trial_count is None:
+        trial_count = n_trials - trial_offset
+    if trial_count < 0:
+        raise ValueError("trial_count must be >= 0.")
+    child_seeds = child_seeds[trial_offset:trial_offset + trial_count]
+
+    if trial_count == 0:
+        return np.array([], dtype=np.float64)
+
+    total_trials = len(child_seeds)
+    use_progress = progress_interval_sec is not None and progress_interval_sec > 0
 
     if n_workers <= 1:
         # ── Sequential path ──────────────────────────────────────────
         n = len(craters)
-        best_scores = np.zeros(n_trials, dtype=np.float64)
+        best_scores = np.zeros(total_trials, dtype=np.float64)
+        t_start = time.monotonic()
+        next_report = t_start + progress_interval_sec if use_progress else None
         for trial, cs in enumerate(child_seeds):
             rng = np.random.default_rng(cs)
             rand_lon, rand_lat = _random_positions_on_sphere(n, rng)
@@ -173,23 +206,59 @@ def null_model_best_scores(
                 best_scores[trial] = pairs["score"].max()
             else:
                 best_scores[trial] = 0.0
+            if next_report is not None and time.monotonic() >= next_report:
+                done = trial + 1
+                elapsed = time.monotonic() - t_start
+                if trial_offset == 0 and total_trials == n_trials:
+                    msg = f"[null_model] {done}/{total_trials} trials ({elapsed:.1f}s)"
+                else:
+                    msg = (
+                        f"[null_model] chunk {trial_offset}-{trial_offset + total_trials - 1}: "
+                        f"{done}/{total_trials} trials ({elapsed:.1f}s)"
+                    )
+                print(msg, file=sys.stderr, flush=True)
+                next_report = time.monotonic() + progress_interval_sec
         return best_scores
 
     # ── Parallel path ────────────────────────────────────────────────
     print(
-        f"[null_model] Running {n_trials:,} trials across {n_workers} workers ...",
+        f"[null_model] Running {total_trials:,} trials across {n_workers} workers ...",
         file=sys.stderr,
         flush=True,
     )
-    chunksize = max(1, n_trials // (4 * n_workers))
+    chunksize = max(1, total_trials // (4 * n_workers))
     with multiprocessing.Pool(
         processes=n_workers,
         initializer=_init_null_worker,
         initargs=(craters, config),
     ) as pool:
-        results = pool.map(_run_null_trial, child_seeds, chunksize=chunksize)
+        if use_progress:
+            results = np.zeros(total_trials, dtype=np.float64)
+            t_start = time.monotonic()
+            next_report = t_start + progress_interval_sec
+            completed = 0
+            for idx, score in pool.imap_unordered(
+                _run_null_trial_indexed,
+                list(enumerate(child_seeds)),
+                chunksize=chunksize,
+            ):
+                results[idx] = score
+                completed += 1
+                if time.monotonic() >= next_report:
+                    elapsed = time.monotonic() - t_start
+                    if trial_offset == 0 and total_trials == n_trials:
+                        msg = f"[null_model] {completed}/{total_trials} trials ({elapsed:.1f}s)"
+                    else:
+                        msg = (
+                            f"[null_model] chunk {trial_offset}-{trial_offset + total_trials - 1}: "
+                            f"{completed}/{total_trials} trials ({elapsed:.1f}s)"
+                        )
+                    print(msg, file=sys.stderr, flush=True)
+                    next_report = time.monotonic() + progress_interval_sec
+            return results
 
-    return np.array(results, dtype=np.float64)
+        results = pool.map(_run_null_trial, child_seeds, chunksize=chunksize)
+        return np.array(results, dtype=np.float64)
 
 
 def empirical_p_value(

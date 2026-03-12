@@ -29,6 +29,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -111,6 +112,55 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "If set, save annotated chip images for significant pairs "
             "(requires chip imagery to be present in chip-results-dir)."
         ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("full", "prep", "null", "final"),
+        default="full",
+        help=(
+            "Execution mode: full runs everything in one job; prep/null/final "
+            "enable checkpointed, array-parallel null model."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Directory to store intermediate checkpoints (default: output-dir/checkpoints).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Resume from existing checkpoints if present.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Ignore checkpoint config mismatches when resuming.",
+    )
+    parser.add_argument(
+        "--progress-interval-sec",
+        type=float,
+        default=300.0,
+        metavar="SEC",
+        help="Emit progress logs every N seconds (0 disables).",
+    )
+    parser.add_argument(
+        "--null-chunk-index",
+        type=int,
+        default=-1,
+        metavar="IDX",
+        help="Chunk index for null-model array jobs (0-based). Defaults to SLURM_ARRAY_TASK_ID.",
+    )
+    parser.add_argument(
+        "--null-chunk-count",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Total number of null-model chunks (array size).",
     )
     return parser.parse_args(argv)
 
@@ -277,10 +327,91 @@ def _print_results_summary(pairs_scored: pd.DataFrame, n_significant: int) -> No
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_checkpoint_dir(output_dir: Path, checkpoint_dir: Path | None) -> Path:
+    return checkpoint_dir if checkpoint_dir is not None else output_dir / "checkpoints"
+
+
+def _craters_checkpoint_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "craters.pkl"
+
+
+def _top_pairs_checkpoint_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "top_pairs.csv"
+
+
+def _checkpoint_meta_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "checkpoint_meta.json"
+
+
+def _null_part_path(checkpoint_dir: Path, chunk_index: int) -> Path:
+    return checkpoint_dir / f"null_scores_part_{chunk_index:05d}.npy"
+
+
+def _null_part_meta_path(checkpoint_dir: Path, chunk_index: int) -> Path:
+    return checkpoint_dir / f"null_scores_part_{chunk_index:05d}.json"
+
+
+def _load_checkpoint_meta(checkpoint_dir: Path) -> dict:
+    meta_path = _checkpoint_meta_path(checkpoint_dir)
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Checkpoint metadata not found: {meta_path}")
+    return load_json(meta_path)
+
+
+def _write_checkpoint_meta(checkpoint_dir: Path, meta: dict) -> None:
+    meta_path = _checkpoint_meta_path(checkpoint_dir)
+    save_json(meta, meta_path)
+
+
+def _validate_checkpoint_meta(meta: dict, args: argparse.Namespace) -> None:
+    expected = {
+        "random_trials": args.random_trials,
+        "random_seed": args.random_seed,
+        "fdr_alpha": args.fdr_alpha,
+        "top_pairs": args.top_pairs,
+        "chip_results_dir": str(args.chip_results_dir.resolve()),
+    }
+    mismatches = []
+    for key, value in expected.items():
+        if key in meta and meta[key] != value:
+            mismatches.append(f"{key} (checkpoint={meta[key]} vs current={value})")
+    if "null_chunk_count" in meta and meta["null_chunk_count"] != args.null_chunk_count:
+        mismatches.append(
+            f"null_chunk_count (checkpoint={meta['null_chunk_count']} vs current={args.null_chunk_count})"
+        )
+    if mismatches and not args.force:
+        details = "; ".join(mismatches)
+        raise ValueError(f"Checkpoint config mismatch: {details}")
+
+
+def _compute_chunk_bounds(
+    total_trials: int,
+    chunk_count: int,
+    chunk_index: int,
+) -> tuple[int, int]:
+    if chunk_count <= 0:
+        raise ValueError("chunk_count must be >= 1.")
+    if not (0 <= chunk_index < chunk_count):
+        raise ValueError("chunk_index out of range.")
+    base = total_trials // chunk_count
+    remainder = total_trials % chunk_count
+    if chunk_index < remainder:
+        count = base + 1
+        start = chunk_index * (base + 1)
+    else:
+        count = base
+        start = remainder * (base + 1) + (chunk_index - remainder) * base
+    return start, count
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run(args: argparse.Namespace) -> int:
+def _run_full(args: argparse.Namespace) -> int:
     """Execute the global aggregation pipeline.
 
     Returns 0 on success, non-zero on failure.
@@ -294,6 +425,9 @@ def run(args: argparse.Namespace) -> int:
     fdr_alpha: float = args.fdr_alpha
     top_pairs: int = args.top_pairs
     null_model_workers: int = args.null_model_workers
+    progress_interval_sec: float | None = (
+        args.progress_interval_sec if args.progress_interval_sec and args.progress_interval_sec > 0 else None
+    )
 
     # ------------------------------------------------------------------
     # Validate inputs
@@ -356,7 +490,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"  Building pairs from {n_craters:,d} craters …")
 
     t_pair_start = time.monotonic()
-    all_pairs = build_chord_pairs(craters, config)
+    all_pairs = build_chord_pairs(craters, config, progress_interval_sec=progress_interval_sec)
     t_pair_elapsed = time.monotonic() - t_pair_start
 
     n_raw_pairs = len(all_pairs)
@@ -387,6 +521,7 @@ def run(args: argparse.Namespace) -> int:
         n_trials=random_trials,
         seed=random_seed,
         n_workers=null_model_workers,
+        progress_interval_sec=progress_interval_sec,
     )
     t_null_elapsed = time.monotonic() - t_null_start
     print(f"  Null model completed in {t_null_elapsed:.1f} s")
@@ -515,6 +650,360 @@ def run(args: argparse.Namespace) -> int:
     print()
 
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Checkpointed / array-friendly modes
+# ---------------------------------------------------------------------------
+
+def _run_prep(args: argparse.Namespace) -> int:
+    """Prepare checkpoints for array-parallel null-model runs."""
+    t_start = time.monotonic()
+    chip_results_dir: Path = args.chip_results_dir.resolve()
+    output_dir: Path = args.output_dir.resolve()
+    random_trials: int = args.random_trials
+    random_seed: int = args.random_seed
+    fdr_alpha: float = args.fdr_alpha
+    top_pairs: int = args.top_pairs
+    progress_interval_sec: float | None = (
+        args.progress_interval_sec if args.progress_interval_sec and args.progress_interval_sec > 0 else None
+    )
+
+    checkpoint_dir = _resolve_checkpoint_dir(output_dir, args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    craters_path = _craters_checkpoint_path(checkpoint_dir)
+    top_pairs_path = _top_pairs_checkpoint_path(checkpoint_dir)
+    meta_path = _checkpoint_meta_path(checkpoint_dir)
+    if args.resume and craters_path.exists() and top_pairs_path.exists() and meta_path.exists():
+        meta = _load_checkpoint_meta(checkpoint_dir)
+        _validate_checkpoint_meta(meta, args)
+        print(f"Checkpoint found; skipping prep. ({checkpoint_dir})")
+        return 0
+
+    if not chip_results_dir.exists():
+        print(
+            f"ERROR: chip-results-dir does not exist: {chip_results_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    _print_section("Discovering chip results")
+    chip_dirs = _discover_chip_dirs(chip_results_dir)
+    print(f"  Found {len(chip_dirs):,d} chip directories with craters.csv")
+    if not chip_dirs:
+        print(
+            "ERROR: no chip_XXXX/craters.csv files found under "
+            f"{chip_results_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
+    _print_section("Loading crater catalogues")
+    craters = _load_craters(chip_dirs)
+    chip_metadata = _load_chip_metadata(chip_dirs)
+    n_chips_with_data = int(craters["chip_index"].nunique()) if not craters.empty else 0
+    n_craters = len(craters)
+    coverage_km2 = _estimate_coverage_km2(chip_metadata, chip_dirs)
+    _print_summary_stats(n_chips_with_data, n_craters, coverage_km2)
+
+    if craters.empty:
+        print("ERROR: no craters loaded — cannot proceed.", file=sys.stderr)
+        return 1
+
+    config = ChordConfig(
+        random_trials=random_trials,
+        random_seed=random_seed,
+        fdr_alpha=fdr_alpha,
+        top_pairs_to_report=top_pairs,
+    )
+
+    _print_section("Running global chord-based pairing")
+    print(f"  Building pairs from {n_craters:,d} craters …")
+    t_pair_start = time.monotonic()
+    all_pairs = build_chord_pairs(craters, config, progress_interval_sec=progress_interval_sec)
+    t_pair_elapsed = time.monotonic() - t_pair_start
+    n_raw_pairs = len(all_pairs)
+    print(f"  Raw pairs found    : {n_raw_pairs:,d}  ({t_pair_elapsed:.1f} s)")
+
+    if not all_pairs.empty:
+        top_nonoverlap = select_top_nonoverlapping_pairs(all_pairs, top_k=top_pairs)
+    else:
+        top_nonoverlap = pd.DataFrame()
+
+    n_top = len(top_nonoverlap)
+    _print_pairing_summary(n_raw_pairs, n_top)
+
+    _print_section("Saving checkpoints")
+    craters.to_pickle(craters_path)
+    save_dataframe(top_nonoverlap, top_pairs_path)
+    meta = {
+        "random_trials": random_trials,
+        "random_seed": random_seed,
+        "fdr_alpha": fdr_alpha,
+        "top_pairs": top_pairs,
+        "chip_results_dir": str(chip_results_dir),
+        "output_dir": str(output_dir),
+        "n_chips_discovered": len(chip_dirs),
+        "n_chips_with_data": n_chips_with_data,
+        "n_craters": n_craters,
+        "coverage_km2": round(coverage_km2, 2),
+        "n_raw_pairs": n_raw_pairs,
+        "n_top_pairs": n_top,
+        "pairing_time_s": round(t_pair_elapsed, 2),
+        "null_chunk_count": args.null_chunk_count,
+        "created_at_epoch_s": time.time(),
+    }
+    _write_checkpoint_meta(checkpoint_dir, meta)
+    print(f"  Saved: {craters_path}")
+    print(f"  Saved: {top_pairs_path}")
+    print(f"  Saved: {meta_path}")
+
+    t_total = time.monotonic() - t_start
+    _print_section("Prep complete")
+    print(f"  Total runtime      : {t_total:.1f} s")
+    print(f"  Checkpoint dir     : {checkpoint_dir}")
+    print()
+
+    return 0
+
+
+def _run_null(args: argparse.Namespace) -> int:
+    """Run one null-model chunk and write a partial result."""
+    t_start = time.monotonic()
+    output_dir: Path = args.output_dir.resolve()
+    checkpoint_dir = _resolve_checkpoint_dir(output_dir, args.checkpoint_dir)
+    meta = _load_checkpoint_meta(checkpoint_dir)
+    _validate_checkpoint_meta(meta, args)
+
+    craters_path = _craters_checkpoint_path(checkpoint_dir)
+    if not craters_path.exists():
+        print(f"ERROR: missing craters checkpoint: {craters_path}", file=sys.stderr)
+        return 1
+    craters = pd.read_pickle(craters_path)
+
+    total_trials = args.random_trials
+    chunk_count = args.null_chunk_count
+    chunk_index = args.null_chunk_index
+    if chunk_index < 0:
+        env_idx = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if env_idx is None:
+            print(
+                "ERROR: null-chunk-index not provided and SLURM_ARRAY_TASK_ID not set.",
+                file=sys.stderr,
+            )
+            return 1
+        chunk_index = int(env_idx)
+    start, count = _compute_chunk_bounds(total_trials, chunk_count, chunk_index)
+
+    part_path = _null_part_path(checkpoint_dir, chunk_index)
+    part_meta_path = _null_part_meta_path(checkpoint_dir, chunk_index)
+    if args.resume and part_path.exists():
+        print(f"Chunk checkpoint exists; skipping. ({part_path})")
+        return 0
+
+    _print_section("Running null model chunk")
+    print(f"  Total trials       : {total_trials:,d}")
+    print(f"  Chunk index        : {chunk_index} / {chunk_count - 1}")
+    print(f"  Chunk start        : {start}")
+    print(f"  Chunk trials       : {count}")
+
+    config = ChordConfig(
+        random_trials=total_trials,
+        random_seed=args.random_seed,
+        fdr_alpha=args.fdr_alpha,
+        top_pairs_to_report=args.top_pairs,
+    )
+    progress_interval_sec: float | None = (
+        args.progress_interval_sec if args.progress_interval_sec and args.progress_interval_sec > 0 else None
+    )
+
+    null_scores = null_model_best_scores(
+        craters,
+        config=config,
+        n_trials=total_trials,
+        seed=args.random_seed,
+        n_workers=args.null_model_workers,
+        trial_offset=start,
+        trial_count=count,
+        progress_interval_sec=progress_interval_sec,
+    )
+    np.save(str(part_path), null_scores)
+    part_meta = {
+        "chunk_index": chunk_index,
+        "chunk_count": chunk_count,
+        "trial_offset": start,
+        "trial_count": count,
+        "runtime_s": round(time.monotonic() - t_start, 2),
+    }
+    save_json(part_meta, part_meta_path)
+    print(f"  Saved: {part_path}")
+    print(f"  Saved: {part_meta_path}")
+    return 0
+
+
+def _run_final(args: argparse.Namespace) -> int:
+    """Merge null-model parts, compute significance, and write outputs."""
+    t_start = time.monotonic()
+    chip_results_dir: Path = args.chip_results_dir.resolve()
+    output_dir: Path = args.output_dir.resolve()
+    random_trials: int = args.random_trials
+    random_seed: int = args.random_seed
+    fdr_alpha: float = args.fdr_alpha
+    top_pairs: int = args.top_pairs
+
+    checkpoint_dir = _resolve_checkpoint_dir(output_dir, args.checkpoint_dir)
+    meta = _load_checkpoint_meta(checkpoint_dir)
+    _validate_checkpoint_meta(meta, args)
+
+    top_pairs_path = _top_pairs_checkpoint_path(checkpoint_dir)
+    if not top_pairs_path.exists():
+        print(f"ERROR: missing top pairs checkpoint: {top_pairs_path}", file=sys.stderr)
+        return 1
+
+    top_nonoverlap = load_dataframe(top_pairs_path)
+    if top_nonoverlap.empty:
+        print("ERROR: top pairs checkpoint is empty — cannot proceed.", file=sys.stderr)
+        return 1
+
+    chunk_count = args.null_chunk_count
+    part_paths = [_null_part_path(checkpoint_dir, i) for i in range(chunk_count)]
+    missing = [p for p in part_paths if not p.exists()]
+    if missing:
+        print("ERROR: missing null-model chunk files:", file=sys.stderr)
+        for p in missing:
+            print(f"  {p}", file=sys.stderr)
+        return 1
+
+    null_scores = np.concatenate([np.load(str(p)) for p in part_paths])
+    if len(null_scores) != random_trials:
+        print(
+            f"WARNING: expected {random_trials} null scores, got {len(null_scores)}",
+            file=sys.stderr,
+        )
+
+    _print_section("Computing significance (Benjamini-Hochberg FDR)")
+    pairs_scored = compute_significance(top_nonoverlap, null_scores, alpha=fdr_alpha)
+    n_significant = (
+        int(pairs_scored["bh_significant"].sum())
+        if not pairs_scored.empty and "bh_significant" in pairs_scored.columns
+        else 0
+    )
+
+    if not pairs_scored.empty:
+        best_score = float(pairs_scored["score"].iloc[0])
+        best_p_value = float(pairs_scored["p_value"].iloc[0]) if "p_value" in pairs_scored.columns else None
+    else:
+        best_score = 0.0
+        best_p_value = None
+
+    _print_results_summary(pairs_scored, n_significant)
+
+    _print_section("Saving outputs")
+    all_pairs_path = output_dir / "all_pairs_scored.csv"
+    if not pairs_scored.empty:
+        save_dataframe(pairs_scored, all_pairs_path)
+    else:
+        pd.DataFrame(columns=[
+            "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
+            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
+            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "p_value", "bh_significant",
+        ]).to_csv(all_pairs_path, index=False)
+    print(f"  Saved: {all_pairs_path}")
+
+    sig_pairs_path = output_dir / "significant_pairs.csv"
+    if not pairs_scored.empty and "bh_significant" in pairs_scored.columns:
+        significant_pairs = pairs_scored[pairs_scored["bh_significant"]].reset_index(drop=True)
+        save_dataframe(significant_pairs, sig_pairs_path)
+    else:
+        significant_pairs = pd.DataFrame()
+        pd.DataFrame(columns=[
+            "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
+            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
+            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "p_value", "bh_significant",
+        ]).to_csv(sig_pairs_path, index=False)
+    print(f"  Saved: {sig_pairs_path}")
+
+    null_path = output_dir / "null_best_scores.npy"
+    np.save(str(null_path), null_scores)
+    print(f"  Saved: {null_path}")
+
+    null_time_total = 0.0
+    for idx in range(chunk_count):
+        meta_path = _null_part_meta_path(checkpoint_dir, idx)
+        if meta_path.exists():
+            part_meta = load_json(meta_path)
+            null_time_total += float(part_meta.get("runtime_s", 0.0))
+
+    t_total = time.monotonic() - t_start
+    summary = {
+        "n_chips_discovered": int(meta.get("n_chips_discovered", 0)),
+        "n_chips_with_data": int(meta.get("n_chips_with_data", 0)),
+        "n_craters": int(meta.get("n_craters", 0)),
+        "coverage_km2": float(meta.get("coverage_km2", 0.0)),
+        "n_raw_pairs": int(meta.get("n_raw_pairs", 0)),
+        "n_top_pairs": int(meta.get("n_top_pairs", 0)),
+        "n_significant": n_significant,
+        "best_score": best_score,
+        "best_p_value": best_p_value,
+        "fdr_alpha": fdr_alpha,
+        "random_trials": random_trials,
+        "random_seed": random_seed,
+        "top_pairs_requested": top_pairs,
+        "pairing_time_s": float(meta.get("pairing_time_s", 0.0)),
+        "null_model_time_s": round(null_time_total, 2),
+        "total_runtime_s": round(t_total, 2),
+        "chip_results_dir": str(chip_results_dir),
+        "output_dir": str(output_dir),
+    }
+    summary_path = output_dir / "global_summary.json"
+    save_json(summary, summary_path)
+    print(f"  Saved: {summary_path}")
+
+    if args.save_pair_images and not significant_pairs.empty:
+        _print_section("Saving significant pair images")
+        craters_path = _craters_checkpoint_path(checkpoint_dir)
+        if craters_path.exists():
+            craters = pd.read_pickle(craters_path)
+            config = ChordConfig(
+                random_trials=random_trials,
+                random_seed=random_seed,
+                fdr_alpha=fdr_alpha,
+                top_pairs_to_report=top_pairs,
+            )
+            _save_pair_images(
+                significant_pairs=significant_pairs,
+                craters=craters,
+                chip_results_dir=chip_results_dir,
+                output_dir=output_dir,
+                config=config,
+            )
+        else:
+            print("  WARNING: craters checkpoint missing; skipping pair images.", file=sys.stderr)
+
+    _print_section("Final stage complete")
+    print(f"  Total runtime      : {t_total:.1f} s")
+    print(f"  Output directory   : {output_dir}")
+    print()
+    return 0
+
+
+def run(args: argparse.Namespace) -> int:
+    if args.mode == "prep":
+        return _run_prep(args)
+    if args.mode == "null":
+        return _run_null(args)
+    if args.mode == "final":
+        return _run_final(args)
+    return _run_full(args)
 
 
 # ---------------------------------------------------------------------------
