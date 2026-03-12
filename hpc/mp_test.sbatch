@@ -9,12 +9,12 @@
 ###############################################################################
 # MOONPIERCER — Quick Test Pipeline
 #
-# Minimal run (20 chips, 100 null-model trials) to verify the full three-stage
-# workflow completes. Produces enough output for the analysis notebook to
-# generate plots, even if coverage is sparse.
+# Minimal run (20 chips, 100 null-model trials) focused on the equatorial band
+# to verify the full three-stage workflow completes. Produces enough output for
+# the analysis notebook to generate plots, even if coverage is sparse.
 #
 # Usage:
-#   sbatch hpc/test_moonpiercer.sbatch
+#   sbatch hpc/mp_test.sbatch
 #
 # Override parameters via environment variables:
 #   MOONPIERCER_MAX_CHIPS      — chips in manifest (default: 20)
@@ -52,7 +52,7 @@ GRID_STEP="${MOONPIERCER_GRID_STEP:-10.0}"
 MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-4}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-100}"
 
-RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_run"
+RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_test"
 MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
@@ -87,7 +87,7 @@ echo "================================================================"
 # initialises the shell properly and `module load python` works.
 
 echo ""
-echo "[Stage 1] Building chip manifest (test: ${MAX_CHIPS} chips, ${GRID_STEP} deg grid)..."
+echo "[Stage 1] Building chip manifest (equator band, ${MAX_CHIPS} chips, ${GRID_STEP} deg grid)..."
 echo ""
 
 MANIFEST_JOB_ID=$(sbatch \
@@ -107,8 +107,8 @@ MANIFEST_JOB_ID=$(sbatch \
         --max-requests-per-second 2.0 \
         --lon-min-deg -180.0 \
         --lon-max-deg 180.0 \
-        --min-lat-deg -60.0 \
-        --max-lat-deg 60.0 \
+        --min-lat-deg -15.0 \
+        --max-lat-deg 15.0 \
         --cache-dir "${CACHE_DIR}"
 )
 

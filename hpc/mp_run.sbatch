@@ -1,28 +1,34 @@
 #!/bin/bash
-#SBATCH --job-name=moonpiercer
-#SBATCH --output=results/slurm_logs/moonpiercer_%j.out
-#SBATCH --error=results/slurm_logs/moonpiercer_%j.err
-#SBATCH --time=48:00:00
-#SBATCH --mem=8G
+#SBATCH --job-name=mp_run
+#SBATCH --output=results/slurm_logs/mp_run_%j.out
+#SBATCH --error=results/slurm_logs/mp_run_%j.err
+#SBATCH --time=01:00:00
+#SBATCH --mem=4G
 #SBATCH --cpus-per-task=4
 
 ###############################################################################
-# MOONPIERCER — Full Chord PBH Lunar Crater Search Pipeline
+# MOONPIERCER — Full-Coverage Chord PBH Lunar Crater Search Pipeline
+#
+# Maximum-coverage production run (15,000 chips, 1.5° grid, 2,000 MC trials).
+# Designed for a total wall-time budget of ~70 hours.
 #
 # Three-stage SLURM pipeline:
-#   Stage 1: Build global chip manifest (single node, threaded)
-#   Stage 2: Process chips (array jobs, batched to max 999 per array)
-#   Stage 3: Global aggregation (single node)
+#   Stage 1: Build global chip manifest (single node, threaded)       ~4 h
+#   Stage 2: Process chips (single array, multi-chip per task)        ~7-12 h
+#   Stage 3: Global aggregation + null model (single node)            ~9-20 h
 #
 # Usage:
-#   sbatch hpc/run_moonpiercer.sbatch
+#   sbatch hpc/mp_run.sbatch
 #
 # Override parameters via environment variables:
-#   MOONPIERCER_MAX_CHIPS      — max chips in manifest (default: 2000)
-#   MOONPIERCER_GRID_STEP      — sweep grid step in degrees (default: 2.0)
-#   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 6)
+#   MOONPIERCER_MAX_CHIPS      — max chips in manifest (default: 15000)
+#   MOONPIERCER_GRID_STEP      — sweep grid step in degrees (default: 1.5)
+#   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 8)
 #   MOONPIERCER_RANDOM_TRIALS  — null model MC trials (default: 2000)
 #   MOONPIERCER_ARRAY_SIZE     — max SLURM array size (default: 999)
+#   MOONPIERCER_NULL_WORKERS   — multiprocessing workers per null chunk (default: 1)
+#   MOONPIERCER_PROGRESS_INTERVAL_SEC — progress log interval (default: 300)
+#   MOONPIERCER_RESUME         — set to 1 to resume from checkpoints
 #   MOONPIERCER_CACHE_DIR      — WMS disk cache directory (default: ./cache)
 #
 # See hpc/setup_env.sh for environment overrides.
@@ -49,16 +55,30 @@ export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-MAX_CHIPS="${MOONPIERCER_MAX_CHIPS:-2000}"
-GRID_STEP="${MOONPIERCER_GRID_STEP:-2.0}"
-MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-6}"
+MAX_CHIPS="${MOONPIERCER_MAX_CHIPS:-15000}"
+GRID_STEP="${MOONPIERCER_GRID_STEP:-1.5}"
+MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-8}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
 ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
+NULL_WORKERS="${MOONPIERCER_NULL_WORKERS:-1}"
+PROGRESS_INTERVAL_SEC="${MOONPIERCER_PROGRESS_INTERVAL_SEC:-300}"
+RESUME_FLAG=""
+if [ "${MOONPIERCER_RESUME:-0}" -eq 1 ]; then
+    RESUME_FLAG="--resume"
+fi
+NULL_CHUNK_COUNT="${ARRAY_SIZE}"
+if [ "${NULL_CHUNK_COUNT}" -lt 1 ]; then
+    NULL_CHUNK_COUNT=1
+fi
+if [ "${NULL_CHUNK_COUNT}" -gt "${RANDOM_TRIALS}" ]; then
+    NULL_CHUNK_COUNT="${RANDOM_TRIALS}"
+fi
 
-RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_run"
+RESULTS_DIR="${SCRIPT_DIR}/results/moonpiercer_full_run"
 MANIFEST_PATH="${RESULTS_DIR}/manifest.csv"
 CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
+CHECKPOINT_DIR="${GLOBAL_OUTPUT_DIR}/checkpoints"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
@@ -73,7 +93,7 @@ mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_
 # ─── Banner ─────────────────────────────────────────────────────────────────
 
 echo "================================================================"
-echo "MOONPIERCER Full Chord Pipeline"
+echo "MOONPIERCER Full-Coverage Chord Pipeline"
 echo "================================================================"
 echo "Project dir:    $PROJECT_DIR"
 echo "Results dir:    $RESULTS_DIR"
@@ -82,6 +102,9 @@ echo "Grid step:      $GRID_STEP deg"
 echo "Max workers:    $MAX_WORKERS"
 echo "Random trials:  $RANDOM_TRIALS"
 echo "Array size:     $ARRAY_SIZE"
+echo "Null chunks:    $NULL_CHUNK_COUNT"
+echo "Null workers:   $NULL_WORKERS"
+echo "Progress (sec): $PROGRESS_INTERVAL_SEC"
 echo "Cache dir:      $CACHE_DIR"
 echo "Python bin:     $PYTHON_BIN"
 echo "================================================================"
@@ -91,17 +114,17 @@ echo "================================================================"
 # initialises the shell properly and `module load python` works.
 
 echo ""
-echo "[Stage 1] Building global chip manifest..."
+echo "[Stage 1] Building global chip manifest (${GRID_STEP}° grid, up to ${MAX_CHIPS} chips)..."
 echo ""
 
 MANIFEST_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
-    --job-name=mp_manifest \
+    --job-name=mp_run_manifest \
     --output="${LOG_DIR}/manifest_%j.out" \
     --error="${LOG_DIR}/manifest_%j.err" \
-    --time=06:00:00 \
-    --mem=4G \
+    --time=24:00:00 \
+    --mem=8G \
     --cpus-per-task="$MAX_WORKERS" \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/manifest.py" \
         --manifest-path "${MANIFEST_PATH}" \
@@ -118,10 +141,10 @@ MANIFEST_JOB_ID=$(sbatch \
 
 echo "  Manifest job submitted: $MANIFEST_JOB_ID"
 
-# ─── Stage 2: Chip Processing (Array Jobs) ──────────────────────────────────
+# ─── Stage 2: Chip Processing (Array Job) ───────────────────────────────────
 
 echo ""
-echo "[Stage 2] Submitting chip processing array jobs..."
+echo "[Stage 2] Submitting chip processing array job..."
 echo ""
 
 # Distribute MAX_CHIPS across at most ARRAY_SIZE array tasks.
@@ -138,10 +161,10 @@ CHIP_JOB_ID=$(sbatch \
     --export=ALL \
     --dependency=afterok:${MANIFEST_JOB_ID} \
     --kill-on-invalid-dep=yes \
-    --job-name=mp_chip \
+    --job-name=mp_run_chip \
     --output="${CHIP_LOG_DIR}/chip_%A_%a.out" \
     --error="${CHIP_LOG_DIR}/chip_%A_%a.err" \
-    --time=01:00:00 \
+    --time=10:00:00 \
     --mem=4G \
     --cpus-per-task=1 \
     --array="0-${ARRAY_END}" \
@@ -160,53 +183,126 @@ echo "  Chip array job submitted: $CHIP_JOB_ID (${N_TASKS} tasks × ${CHIPS_PER_
 # ─── Stage 3: Global Aggregation ────────────────────────────────────────────
 
 echo ""
-echo "[Stage 3] Submitting global aggregation job..."
+echo "[Stage 3a] Submitting global aggregation prep..."
 echo ""
 
-GLOBAL_JOB_ID=$(sbatch \
+PREP_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
     --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
-    --job-name=mp_global \
-    --output="${LOG_DIR}/global_%j.out" \
-    --error="${LOG_DIR}/global_%j.err" \
-    --time=12:00:00 \
-    --mem=16G \
-    --cpus-per-task=4 \
+    --job-name=mp_run_prep \
+    --output="${LOG_DIR}/global_prep_%j.out" \
+    --error="${LOG_DIR}/global_prep_%j.err" \
+    --time=24:00:00 \
+    --mem=32G \
+    --cpus-per-task=8 \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
+        --mode prep \
         --chip-results-dir "${CHIP_RESULTS_DIR}" \
         --output-dir "${GLOBAL_OUTPUT_DIR}" \
+        --checkpoint-dir "${CHECKPOINT_DIR}" \
         --random-trials "${RANDOM_TRIALS}" \
         --random-seed 42 \
         --fdr-alpha 0.05 \
         --top-pairs 50 \
-        --null-model-workers 4 \
-        --save-pair-images
+        --null-chunk-count "${NULL_CHUNK_COUNT}" \
+        --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
+        ${RESUME_FLAG}
 )
 
-echo "  Global aggregation job submitted: $GLOBAL_JOB_ID"
+echo "  Prep job submitted: $PREP_JOB_ID"
+
+NULL_ARRAY_END=$((NULL_CHUNK_COUNT - 1))
+
+echo ""
+echo "[Stage 3b] Submitting null-model array (${NULL_CHUNK_COUNT} chunks)..."
+echo ""
+
+NULL_JOB_ID=$(sbatch \
+    --parsable \
+    --export=ALL \
+    --dependency=afterok:${PREP_JOB_ID} \
+    --kill-on-invalid-dep=yes \
+    --job-name=mp_run_null \
+    --output="${LOG_DIR}/null_%A_%a.out" \
+    --error="${LOG_DIR}/null_%A_%a.err" \
+    --time=24:00:00 \
+    --mem=32G \
+    --cpus-per-task="${NULL_WORKERS}" \
+    --array="0-${NULL_ARRAY_END}" \
+    "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
+        --mode null \
+        --chip-results-dir "${CHIP_RESULTS_DIR}" \
+        --output-dir "${GLOBAL_OUTPUT_DIR}" \
+        --checkpoint-dir "${CHECKPOINT_DIR}" \
+        --random-trials "${RANDOM_TRIALS}" \
+        --random-seed 42 \
+        --fdr-alpha 0.05 \
+        --top-pairs 50 \
+        --null-model-workers "${NULL_WORKERS}" \
+        --null-chunk-count "${NULL_CHUNK_COUNT}" \
+        --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
+        ${RESUME_FLAG}
+)
+
+echo "  Null-model array submitted: $NULL_JOB_ID"
+
+echo ""
+echo "[Stage 3c] Submitting final aggregation..."
+echo ""
+
+FINAL_JOB_ID=$(sbatch \
+    --parsable \
+    --export=ALL \
+    --dependency=afterok:${NULL_JOB_ID} \
+    --kill-on-invalid-dep=yes \
+    --job-name=mp_run_final \
+    --output="${LOG_DIR}/global_final_%j.out" \
+    --error="${LOG_DIR}/global_final_%j.err" \
+    --time=12:00:00 \
+    --mem=16G \
+    --cpus-per-task=4 \
+    "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
+        --mode final \
+        --chip-results-dir "${CHIP_RESULTS_DIR}" \
+        --output-dir "${GLOBAL_OUTPUT_DIR}" \
+        --checkpoint-dir "${CHECKPOINT_DIR}" \
+        --random-trials "${RANDOM_TRIALS}" \
+        --random-seed 42 \
+        --fdr-alpha 0.05 \
+        --top-pairs 50 \
+        --null-chunk-count "${NULL_CHUNK_COUNT}" \
+        --save-pair-images \
+        ${RESUME_FLAG}
+)
+
+echo "  Final aggregation job submitted: $FINAL_JOB_ID"
 
 # ─── Cleanup ────────────────────────────────────────────────────────────────
 
 CLEANUP_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
-    --dependency=afterany:${GLOBAL_JOB_ID} \
+    --dependency=afterany:${FINAL_JOB_ID} \
     --kill-on-invalid-dep=yes \
-    --job-name=mp_cleanup \
+    --job-name=mp_run_cleanup \
     --output=/dev/null \
     --error=/dev/null \
-    --time=00:05:00 \
+    --time=00:15:00 \
     --mem=256M \
     --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
 )
 
 echo ""
 echo "================================================================"
-echo "Pipeline submitted:"
+echo "Full-coverage pipeline submitted:"
 echo "  Stage 1 (manifest):    $MANIFEST_JOB_ID"
 echo "  Stage 2 (chips):       $CHIP_JOB_ID"
-echo "  Stage 3 (aggregation): $GLOBAL_JOB_ID"
+echo "  Stage 3a (prep):       $PREP_JOB_ID"
+echo "  Stage 3b (null):       $NULL_JOB_ID"
+echo "  Stage 3c (final):      $FINAL_JOB_ID"
 echo "  Cleanup:               $CLEANUP_JOB_ID"
+echo ""
+echo "Monitor with:  squeue -u \$USER"
 echo "================================================================"

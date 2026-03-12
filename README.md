@@ -122,28 +122,20 @@ All optional:
 
 ## HPC Submission
 
-Four sbatch scripts are provided for SLURM clusters:
+Three sbatch scripts are provided for SLURM clusters:
 
 ### Quick Test
 
-Runs a minimal pipeline (20 chips, 100 null-model trials) to validate that the
-full three-stage workflow completes and produces outputs suitable for the
-analysis notebook. Takes roughly 1–2 hours end-to-end.
+Runs a minimal pipeline (20 chips, 100 null-model trials) focused on the
+equatorial band (±15° latitude) to validate that the full three-stage workflow
+completes and produces outputs suitable for the analysis notebook. Takes
+roughly 1–2 hours end-to-end.
 
 ```bash
-sbatch hpc/test_moonpiercer.sbatch
+sbatch hpc/mp_test.sbatch
 ```
 
-### Standard Run
-
-Runs the pipeline with configurable chip counts (default 2000). Suitable for
-exploratory runs and intermediate-scale searches.
-
-```bash
-sbatch hpc/run_moonpiercer.sbatch
-```
-
-### Full-Coverage Run
+### Full Run
 
 Maximum-coverage production run (15,000 chips, 1.5° grid, 2,000 MC trials).
 Chip processing is distributed across a single SLURM array job of up to 999
@@ -152,17 +144,17 @@ tasks, with each task processing multiple chips sequentially
 end-to-end.
 
 ```bash
-sbatch hpc/full_run_moonpiercer.sbatch
+sbatch hpc/mp_run.sbatch
 ```
 
 ### Resume Run
 
-Resumes a pipeline from an existing manifest, skipping Stage 1. Useful when the
-manifest completed but chip processing or aggregation failed. Results are
+Resumes a pipeline by inspecting the results directory, submitting only missing
+chip tasks, missing null chunks, and final aggregation as needed. Results are
 written into the same folder.
 
 ```bash
-sbatch hpc/resume_moonpiercer.sbatch results/moonpiercer_full_run
+sbatch hpc/mp_resume.sbatch results/moonpiercer_full_run
 ```
 
 The actual chip count is read directly from the manifest CSV, so no
@@ -170,21 +162,25 @@ The actual chip count is read directly from the manifest CSV, so no
 
 ### Environment Variable Overrides
 
-All optional. Apply to `run_moonpiercer.sbatch` and `full_run_moonpiercer.sbatch`:
+All optional. Apply to `mp_run.sbatch` (and most are respected by
+`mp_resume.sbatch`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `MOONPIERCER_MAX_CHIPS` | 15000 (full), 2000 (standard) | Max chips in manifest |
-| `MOONPIERCER_GRID_STEP` | 1.5 (full), 2.0 (standard) | Sweep grid step in degrees |
-| `MOONPIERCER_MAX_WORKERS` | 8 (full), 6 (standard) | Manifest build thread count |
+| `MOONPIERCER_MAX_CHIPS` | 15000 | Max chips in manifest |
+| `MOONPIERCER_GRID_STEP` | 1.5 | Sweep grid step in degrees |
+| `MOONPIERCER_MAX_WORKERS` | 8 | Manifest build thread count |
 | `MOONPIERCER_RANDOM_TRIALS` | 2000 | Null model MC trials |
 | `MOONPIERCER_ARRAY_SIZE` | 999 | Max SLURM array size |
+| `MOONPIERCER_NULL_WORKERS` | 1 | Workers per null chunk |
+| `MOONPIERCER_PROGRESS_INTERVAL_SEC` | 300 | Progress log interval |
+| `MOONPIERCER_RESUME` | 0 | Use checkpoints (mp_run); mp_resume defaults to 1 |
 | `MOONPIERCER_CACHE_DIR` | `./cache` | WMS disk cache directory |
 
 Example with overrides:
 
 ```bash
-MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/run_moonpiercer.sbatch
+MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/mp_run.sbatch
 ```
 
 ### Monitoring
@@ -204,7 +200,12 @@ cat results/slurm_logs/manifest_<JOBID>.out
 # Chip processing (in dedicated subfolder)
 cat results/slurm_logs/chip_logs/chip_<JOBID>_<TASKID>.out
 
-# Global aggregation
+# Global aggregation (mp_run: prep / null / final)
+cat results/slurm_logs/global_prep_<JOBID>.out
+cat results/slurm_logs/null_<JOBID>_<TASKID>.out
+cat results/slurm_logs/global_final_<JOBID>.out
+
+# Global aggregation (mp_test)
 cat results/slurm_logs/global_<JOBID>.out
 ```
 
@@ -220,10 +221,9 @@ methodology-only figures if not.
 moonpiercer/
 ├── hpc/
 │   ├── setup_env.sh                 # Environment bootstrap (module + venv)
-│   ├── test_moonpiercer.sbatch      # Quick test (20 chips)
-│   ├── run_moonpiercer.sbatch       # Standard run (2000 chips)
-│   ├── full_run_moonpiercer.sbatch  # Full-coverage run (15000 chips)
-│   ├── resume_moonpiercer.sbatch    # Resume from existing manifest
+│   ├── mp_test.sbatch               # Quick test (equatorial)
+│   ├── mp_run.sbatch                # Full-coverage run (15000 chips)
+│   ├── mp_resume.sbatch             # Resume from existing results
 │   ├── manifest.py                  # Stage 1: build chip manifest
 │   ├── chip_worker.py               # Stage 2: per-chip crater detection
 │   └── global_aggregation.py        # Stage 3: pairing, null model, significance
