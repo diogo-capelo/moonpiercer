@@ -185,12 +185,6 @@ MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/mp_run.sbatc
 
 ### Monitoring
 
-Check job status:
-
-```bash
-squeue -u $USER
-```
-
 View logs:
 
 ```bash
