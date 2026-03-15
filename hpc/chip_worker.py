@@ -429,6 +429,18 @@ def process_chip(
     save_dataframe(detections, craters_path)
     print(f"[chip_worker] craters saved → {craters_path}", flush=True)
 
+    # Save raw grayscale chip for pair image visualisation
+    nac_path = chip_dir / "nac.png"
+    try:
+        from PIL import Image as _PILImage
+        nac_uint8 = np.clip(gray * 255.0, 0, 255).astype(np.uint8)
+        _PILImage.fromarray(nac_uint8, mode="L").save(str(nac_path))
+    except Exception as exc:
+        print(
+            f"[chip_worker] WARNING: could not save nac.png for chip {chip_index}: {exc}",
+            file=sys.stderr,
+        )
+
     metadata = {
         "chip_index":          chip_index,
         "product_id":          product_id,
@@ -444,6 +456,7 @@ def process_chip(
         "mpp_y":               float(mpp_y),
         "mpp_mean":            float(mpp_mean),
         "chip_size_px":        config.chip_size_px,
+        "chip_span_m":         config.chip_span_m,
         "n_craters":           int(len(detections)),
         "threshold":           float(threshold),
         "terrain_mean_m":      terrain_mean_m   if np.isfinite(terrain_mean_m)   else None,
@@ -536,17 +549,38 @@ def main() -> int:
     # ---------------------------------------------------- process each chip
     n_ok = 0
     n_fail = 0
-    for chip_index in chip_indices:
+    failed_chips: list[int] = []
+    for idx_in_batch, chip_index in enumerate(chip_indices):
+        print(
+            f"[chip_worker] Task {task_id}: chip {idx_in_batch + 1}/{len(chip_indices)} "
+            f"(manifest_index={chip_index})",
+            flush=True,
+        )
         rc = process_chip(args, chip_index, manifest, config, client)
         if rc == 0:
             n_ok += 1
         else:
             n_fail += 1
+            failed_chips.append(chip_index)
 
     elapsed = time.perf_counter() - t_main
+    print(flush=True)
     print(
-        f"[chip_worker] Task {task_id} DONE: {n_ok} ok, {n_fail} failed "
+        f"[chip_worker] ══════════════════════════════════════════════",
+        flush=True,
+    )
+    print(
+        f"[chip_worker] Task {task_id} COMPLETE: {n_ok} ok, {n_fail} failed "
         f"out of {len(chip_indices)} chips  elapsed={elapsed:.1f}s",
+        flush=True,
+    )
+    if failed_chips:
+        print(
+            f"[chip_worker] FAILED chip indices: {failed_chips}",
+            flush=True,
+        )
+    print(
+        f"[chip_worker] ══════════════════════════════════════════════",
         flush=True,
     )
     # Only fail the task if every chip failed
@@ -596,6 +630,7 @@ def _save_empty(
         "mpp_y":               None,
         "mpp_mean":            None,
         "chip_size_px":        None,
+        "chip_span_m":         None,
         "n_craters":           0,
         "threshold":           None,
         "terrain_mean_m":      None,

@@ -81,9 +81,11 @@ GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
 CHECKPOINT_DIR="${GLOBAL_OUTPUT_DIR}/checkpoints"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
+NULL_LOG_DIR="${LOG_DIR}/null_logs"
+STAGE_LOG_DIR="${LOG_DIR}/stage_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
-mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
+mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$NULL_LOG_DIR" "$STAGE_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
 
 # ─── Environment bootstrap ────────────────────────────────────────────────
 
@@ -121,8 +123,8 @@ MANIFEST_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
     --job-name=mp_run_manifest \
-    --output="${LOG_DIR}/manifest_%j.out" \
-    --error="${LOG_DIR}/manifest_%j.err" \
+    --output="${STAGE_LOG_DIR}/manifest_%j.out" \
+    --error="${STAGE_LOG_DIR}/manifest_%j.err" \
     --time=24:00:00 \
     --mem=8G \
     --cpus-per-task="$MAX_WORKERS" \
@@ -192,8 +194,8 @@ PREP_JOB_ID=$(sbatch \
     --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_run_prep \
-    --output="${LOG_DIR}/global_prep_%j.out" \
-    --error="${LOG_DIR}/global_prep_%j.err" \
+    --output="${STAGE_LOG_DIR}/global_prep_%j.out" \
+    --error="${STAGE_LOG_DIR}/global_prep_%j.err" \
     --time=24:00:00 \
     --mem=32G \
     --cpus-per-task=8 \
@@ -225,8 +227,8 @@ NULL_JOB_ID=$(sbatch \
     --dependency=afterok:${PREP_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_run_null \
-    --output="${LOG_DIR}/null_%A_%a.out" \
-    --error="${LOG_DIR}/null_%A_%a.err" \
+    --output="${NULL_LOG_DIR}/null_%A_%a.out" \
+    --error="${NULL_LOG_DIR}/null_%A_%a.err" \
     --time=24:00:00 \
     --mem=32G \
     --cpus-per-task="${NULL_WORKERS}" \
@@ -258,8 +260,8 @@ FINAL_JOB_ID=$(sbatch \
     --dependency=afterok:${NULL_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_run_final \
-    --output="${LOG_DIR}/global_final_%j.out" \
-    --error="${LOG_DIR}/global_final_%j.err" \
+    --output="${STAGE_LOG_DIR}/global_final_%j.out" \
+    --error="${STAGE_LOG_DIR}/global_final_%j.err" \
     --time=12:00:00 \
     --mem=16G \
     --cpus-per-task=4 \
@@ -291,7 +293,7 @@ CLEANUP_JOB_ID=$(sbatch \
     --error=/dev/null \
     --time=00:15:00 \
     --mem=256M \
-    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
+    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; find ${NULL_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; find ${STAGE_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
 )
 
 echo ""
@@ -304,5 +306,13 @@ echo "  Stage 3b (null):       $NULL_JOB_ID"
 echo "  Stage 3c (final):      $FINAL_JOB_ID"
 echo "  Cleanup:               $CLEANUP_JOB_ID"
 echo ""
-echo "Monitor with:  squeue -u \$USER"
+echo "SLURM log layout:"
+echo "  Stage logs:  ${STAGE_LOG_DIR}/"
+echo "  Chip logs:   ${CHIP_LOG_DIR}/"
+echo "  Null logs:   ${NULL_LOG_DIR}/"
+echo ""
+echo "Monitor with:"
+echo "  squeue -u \$USER"
+echo "  python hpc/progress.py ${RESULTS_DIR}"
+echo "  python hpc/progress.py ${RESULTS_DIR} --watch 60"
 echo "================================================================"

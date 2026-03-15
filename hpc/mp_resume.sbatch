@@ -77,6 +77,8 @@ GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
 CHECKPOINT_DIR="${GLOBAL_OUTPUT_DIR}/checkpoints"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
+NULL_LOG_DIR="${LOG_DIR}/null_logs"
+STAGE_LOG_DIR="${LOG_DIR}/stage_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
 # ─── Verify manifest ────────────────────────────────────────────────────────
@@ -110,7 +112,7 @@ if [ "${MOONPIERCER_RESUME:-1}" -eq 0 ]; then
     RESUME_FLAG=""
 fi
 
-mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CHECKPOINT_DIR" "$CACHE_DIR"
+mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$NULL_LOG_DIR" "$STAGE_LOG_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CHECKPOINT_DIR" "$CACHE_DIR"
 
 # ─── Environment bootstrap ──────────────────────────────────────────────────
 
@@ -223,6 +225,36 @@ if [ "$FORCE_REBUILD" -eq 1 ]; then
     RESUME_FLAG=""
 fi
 
+# ─── Previous-run diagnostics ──────────────────────────────────────────────
+
+CHIPS_OK=0
+CHIPS_EMPTY=0
+CHIPS_ERROR_COUNT=0
+if [ -d "$CHIP_RESULTS_DIR" ]; then
+    for ((i=0; i<TOTAL_CHIPS; i++)); do
+        printf -v chip_dir "%s/chip_%04d" "$CHIP_RESULTS_DIR" "$i"
+        meta_file="${chip_dir}/metadata.json"
+        if [ -f "$meta_file" ]; then
+            chip_status=$("${PYTHON_BIN}" -c "
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+    print(m.get('status','unknown'), m.get('n_craters',0))
+except: print('unreadable 0')
+" "$meta_file" 2>/dev/null || echo "unreadable 0")
+            read -r cs cn <<< "$chip_status"
+            if [ "$cs" = "ok" ] && [ "$cn" -gt 0 ] 2>/dev/null; then
+                CHIPS_OK=$((CHIPS_OK + 1))
+            elif [ "$cs" = "ok" ] || [ "$cs" = "no_data" ] || [ "$cs" = "blank_chip" ] || \
+                 [ "$cs" = "noise_floor" ] || [ "$cs" = "invalid_bbox" ] || [ "$cs" = "chip_download_failed" ]; then
+                CHIPS_EMPTY=$((CHIPS_EMPTY + 1))
+            else
+                CHIPS_ERROR_COUNT=$((CHIPS_ERROR_COUNT + 1))
+            fi
+        fi
+    done
+fi
+
 # ─── Banner ─────────────────────────────────────────────────────────────────
 
 echo "================================================================"
@@ -232,16 +264,44 @@ echo "Project dir:      $PROJECT_DIR"
 echo "Results dir:      $RESULTS_DIR"
 echo "Manifest:         $MANIFEST_PATH"
 echo "Total chips:      $TOTAL_CHIPS"
-echo "Missing chips:    $MISSING_CHIPS_COUNT"
 echo "Random trials:    $RANDOM_TRIALS"
 echo "Null chunks:      $NULL_CHUNK_COUNT"
-echo "Missing null:     $MISSING_NULL_COUNT"
 echo "Progress (sec):   $PROGRESS_INTERVAL_SEC"
 echo "Cache dir:        $CACHE_DIR"
 echo "Python bin:       $PYTHON_BIN"
 echo "================================================================"
+echo ""
+echo "── Previous Run Accounting ──────────────────────────────────────"
+COMPLETED_CHIPS=$((TOTAL_CHIPS - MISSING_CHIPS_COUNT))
+echo "  Chip processing:       ${COMPLETED_CHIPS}/${TOTAL_CHIPS} completed"
+echo "    With craters:          $CHIPS_OK"
+echo "    Empty/no-data:         $CHIPS_EMPTY"
+echo "    Errors:                $CHIPS_ERROR_COUNT"
+echo "    Missing entirely:      $MISSING_CHIPS_COUNT"
+echo ""
+echo "  Prep stage:            $([ $PREP_DONE -eq 1 ] && echo 'DONE' || echo 'NEEDED')"
+NULL_COMPLETED=$((NULL_CHUNK_COUNT - MISSING_NULL_COUNT))
+echo "  Null model:            ${NULL_COMPLETED}/${NULL_CHUNK_COUNT} chunks"
+if [ "$MISSING_NULL_COUNT" -gt 0 ] && [ "$MISSING_NULL_COUNT" -le 15 ]; then
+    echo "    Missing chunks:      $(cat "$MISSING_NULL_FILE" | tr '\n' ', ' | sed 's/,$//')"
+fi
+echo "  Final aggregation:     $([ $FINAL_DONE -eq 1 ] && echo 'DONE' || echo 'NEEDED')"
+echo ""
+echo "  What will be re-submitted:"
+[ "$CHIPS_COMPLETE" -eq 0 ] && echo "    - ${MISSING_CHIPS_COUNT} missing chips"
+[ "$PREP_DONE" -eq 0 ] && echo "    - Prep stage (full rebuild)"
+if [ "$NULL_DONE" -eq 0 ]; then
+    if [ "$PREP_DONE" -eq 0 ]; then
+        echo "    - All ${NULL_CHUNK_COUNT} null chunks (after prep)"
+    elif [ "$MISSING_NULL_COUNT" -gt 0 ]; then
+        echo "    - ${MISSING_NULL_COUNT} missing null chunks"
+    fi
+fi
+[ "$FINAL_DONE" -eq 0 ] && echo "    - Final aggregation"
+echo "────────────────────────────────────────────────────────────────"
 
 if [ "$CHIPS_COMPLETE" -eq 1 ] && [ "$PREP_DONE" -eq 1 ] && [ "$NULL_DONE" -eq 1 ] && [ "$FINAL_DONE" -eq 1 ]; then
+    echo ""
     echo "All stages complete. Nothing to resume."
     exit 0
 fi
@@ -336,8 +396,8 @@ if [ "$PREP_DONE" -eq 0 ]; then
         --export=ALL \
         "${DEP_OPTS[@]}" \
         --job-name=mp_resume_prep \
-        --output="${LOG_DIR}/global_prep_%j.out" \
-        --error="${LOG_DIR}/global_prep_%j.err" \
+        --output="${STAGE_LOG_DIR}/global_prep_%j.out" \
+        --error="${STAGE_LOG_DIR}/global_prep_%j.err" \
         --time=24:00:00 \
         --mem=32G \
         --cpus-per-task=8 \
@@ -378,8 +438,8 @@ if [ "$NULL_DONE" -eq 0 ]; then
             --export=ALL \
             "${DEP_OPTS[@]}" \
             --job-name=mp_resume_null \
-            --output="${LOG_DIR}/null_%A_%a.out" \
-            --error="${LOG_DIR}/null_%A_%a.err" \
+            --output="${NULL_LOG_DIR}/null_%A_%a.out" \
+            --error="${NULL_LOG_DIR}/null_%A_%a.err" \
             --time=24:00:00 \
             --mem=32G \
             --cpus-per-task="${NULL_WORKERS}" \
@@ -489,8 +549,8 @@ if [ "$FINAL_DONE" -eq 0 ]; then
         --export=ALL \
         "${DEP_OPTS[@]}" \
         --job-name=mp_resume_final \
-        --output="${LOG_DIR}/global_final_%j.out" \
-        --error="${LOG_DIR}/global_final_%j.err" \
+        --output="${STAGE_LOG_DIR}/global_final_%j.out" \
+        --error="${STAGE_LOG_DIR}/global_final_%j.err" \
         --time=12:00:00 \
         --mem=16G \
         --cpus-per-task=4 \
@@ -524,7 +584,7 @@ if [ -n "$FINAL_JOB_ID" ]; then
         --error=/dev/null \
         --time=00:15:00 \
         --mem=256M \
-        --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
+        --wrap="find ${LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; find ${NULL_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; find ${STAGE_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
     )
 fi
 
@@ -539,5 +599,8 @@ if [ -n "${CLEANUP_JOB_ID:-}" ]; then
     echo "  Cleanup:               ${CLEANUP_JOB_ID}"
 fi
 echo ""
-echo "Monitor with:  squeue -u \$USER"
+echo "Monitor with:"
+echo "  squeue -u \$USER"
+echo "  python hpc/progress.py ${RESULTS_DIR}"
+echo "  python hpc/progress.py ${RESULTS_DIR} --watch 60"
 echo "================================================================"

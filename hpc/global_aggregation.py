@@ -236,6 +236,44 @@ def _load_chip_metadata(chip_dirs: list[Path]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Chip health reporting
+# ---------------------------------------------------------------------------
+
+def _report_chip_health(chip_dirs: list[Path]) -> None:
+    """Print a breakdown of chip statuses for accountability."""
+    if not chip_dirs:
+        return
+
+    status_counts: dict[str, int] = {}
+    n_with_craters = 0
+    total_craters = 0
+
+    for chip_dir in chip_dirs:
+        meta_path = chip_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                meta = load_json(meta_path)
+                status = meta.get("status", "unknown")
+                n_craters = int(meta.get("n_craters", 0))
+            except Exception:
+                status = "unreadable_metadata"
+                n_craters = 0
+        else:
+            status = "missing_metadata"
+            n_craters = 0
+
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if n_craters > 0:
+            n_with_craters += 1
+            total_craters += n_craters
+
+    print(f"  Chip status breakdown:")
+    for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
+        print(f"    {status:<25s} : {count:>6,d}")
+    print(f"  Chips with craters: {n_with_craters:,d} ({total_craters:,d} total craters)")
+
+
+# ---------------------------------------------------------------------------
 # Coverage estimation
 # ---------------------------------------------------------------------------
 
@@ -693,6 +731,10 @@ def _run_prep(args: argparse.Namespace) -> int:
     _print_section("Discovering chip results")
     chip_dirs = _discover_chip_dirs(chip_results_dir)
     print(f"  Found {len(chip_dirs):,d} chip directories with craters.csv")
+
+    # Report chip health: scan metadata for status breakdown
+    _report_chip_health(chip_dirs)
+
     if not chip_dirs:
         print(
             "ERROR: no chip_XXXX/craters.csv files found under "
@@ -711,6 +753,12 @@ def _run_prep(args: argparse.Namespace) -> int:
 
     if craters.empty:
         print("ERROR: no craters loaded — cannot proceed.", file=sys.stderr)
+        print(
+            "DETAIL: All chip directories existed but contained 0 craters. "
+            "This can happen when all chips are blank/no-data, the WMS "
+            "was unreachable, or the detection threshold was too stringent.",
+            file=sys.stderr,
+        )
         return 1
 
     config = ChordConfig(
@@ -830,17 +878,40 @@ def _run_null(args: argparse.Namespace) -> int:
         trial_count=count,
         progress_interval_sec=progress_interval_sec,
     )
+    null_runtime = round(time.monotonic() - t_start, 2)
     np.save(str(part_path), null_scores)
     part_meta = {
         "chunk_index": chunk_index,
         "chunk_count": chunk_count,
         "trial_offset": start,
         "trial_count": count,
-        "runtime_s": round(time.monotonic() - t_start, 2),
+        "runtime_s": null_runtime,
     }
     save_json(part_meta, part_meta_path)
     print(f"  Saved: {part_path}")
     print(f"  Saved: {part_meta_path}")
+
+    # Report overall null-model progress
+    completed_chunks = sum(
+        1 for i in range(chunk_count)
+        if _null_part_path(checkpoint_dir, i).exists()
+    )
+    print()
+    print(f"  ══════════════════════════════════════════════")
+    print(f"  Null chunk {chunk_index} COMPLETE in {null_runtime:.1f}s")
+    print(f"  Overall null progress: {completed_chunks}/{chunk_count} chunks done"
+          f" ({completed_chunks / chunk_count:.0%})")
+    if completed_chunks < chunk_count:
+        missing = [
+            i for i in range(chunk_count)
+            if not _null_part_path(checkpoint_dir, i).exists()
+        ]
+        if len(missing) <= 10:
+            print(f"  Missing chunks: {missing}")
+        else:
+            print(f"  Missing chunks: {len(missing)} remaining")
+    print(f"  ══════════════════════════════════════════════")
+
     return 0
 
 

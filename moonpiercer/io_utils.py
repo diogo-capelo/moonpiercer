@@ -42,8 +42,21 @@ def save_dataframe(df: pd.DataFrame, path: Path | str) -> Path:
 
 
 def load_dataframe(path: Path | str) -> pd.DataFrame:
-    """Read a CSV into a DataFrame."""
-    return pd.read_csv(path)
+    """Read a CSV into a DataFrame.
+
+    Returns an empty DataFrame if the file is missing, empty, or
+    contains only whitespace (e.g. a 0-pair results CSV).
+    """
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    text = p.read_text(encoding="utf-8").strip()
+    if not text:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(p)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def save_json(obj: dict, path: Path | str, indent: int = 2) -> Path:

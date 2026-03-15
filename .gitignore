@@ -1,3 +1,7 @@
+# Python cache
+__pycache__
+.pytest_cache
+
 # SLURM output
 slurm_logs/
 

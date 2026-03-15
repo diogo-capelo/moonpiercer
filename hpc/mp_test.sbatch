@@ -58,9 +58,10 @@ CHIP_RESULTS_DIR="${RESULTS_DIR}/chips"
 GLOBAL_OUTPUT_DIR="${RESULTS_DIR}/global"
 LOG_DIR="${SCRIPT_DIR}/results/slurm_logs"
 CHIP_LOG_DIR="${LOG_DIR}/chip_logs"
+STAGE_LOG_DIR="${LOG_DIR}/stage_logs"
 CACHE_DIR="${MOONPIERCER_CACHE_DIR:-${SCRIPT_DIR}/cache}"
 
-mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
+mkdir -p "$LOG_DIR" "$CHIP_LOG_DIR" "$STAGE_LOG_DIR" "$RESULTS_DIR" "$CHIP_RESULTS_DIR" "$GLOBAL_OUTPUT_DIR" "$CACHE_DIR"
 
 # ─── Environment bootstrap ────────────────────────────────────────────────
 
@@ -94,8 +95,8 @@ MANIFEST_JOB_ID=$(sbatch \
     --parsable \
     --export=ALL \
     --job-name=mp_t_manifest \
-    --output="${LOG_DIR}/manifest_%j.out" \
-    --error="${LOG_DIR}/manifest_%j.err" \
+    --output="${STAGE_LOG_DIR}/manifest_%j.out" \
+    --error="${STAGE_LOG_DIR}/manifest_%j.err" \
     --time=01:00:00 \
     --mem=2G \
     --cpus-per-task="$MAX_WORKERS" \
@@ -157,8 +158,8 @@ GLOBAL_JOB_ID=$(sbatch \
     --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
     --job-name=mp_t_global \
-    --output="${LOG_DIR}/global_%j.out" \
-    --error="${LOG_DIR}/global_%j.err" \
+    --output="${STAGE_LOG_DIR}/global_%j.out" \
+    --error="${STAGE_LOG_DIR}/global_%j.err" \
     --time=02:00:00 \
     --mem=8G \
     --cpus-per-task=4 \
@@ -187,7 +188,7 @@ CLEANUP_JOB_ID=$(sbatch \
     --error=/dev/null \
     --time=00:05:00 \
     --mem=256M \
-    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
+    --wrap="find ${LOG_DIR} -name '*.err' -empty -delete && find ${CHIP_LOG_DIR} -name '*.err' -empty -delete && find ${STAGE_LOG_DIR} -name '*.err' -empty -delete 2>/dev/null; echo 'Cleaned empty .err files'"
 )
 
 echo ""
@@ -199,4 +200,6 @@ echo "  Stage 3 (aggregation): $GLOBAL_JOB_ID"
 echo "  Cleanup:               $CLEANUP_JOB_ID"
 echo ""
 echo "Monitor with:  squeue -u \$USER"
+echo "Progress:      python hpc/progress.py ${RESULTS_DIR}"
+echo "Watch mode:    python hpc/progress.py ${RESULTS_DIR} --watch 30"
 echo "================================================================"
