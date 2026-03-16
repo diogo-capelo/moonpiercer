@@ -340,6 +340,114 @@ def build_chord_pairs(
     return pairs
 
 
+def max_pair_score(
+    craters: pd.DataFrame,
+    config: ChordConfig | None = None,
+) -> float:
+    """Compute the maximum pair score without storing all pairs.
+
+    Functionally equivalent to::
+
+        pairs = build_chord_pairs(craters, config)
+        return float(pairs["score"].max()) if len(pairs) > 0 else 0.0
+
+    but uses O(1) memory instead of O(N_pairs), making it suitable for
+    Monte Carlo null-model trials where only the best score is needed.
+    """
+    if config is None:
+        config = ChordConfig()
+
+    n = len(craters)
+    if n < 2:
+        return 0.0
+
+    lons = craters["lon_deg"].to_numpy(dtype=np.float64)
+    lats = craters["lat_deg"].to_numpy(dtype=np.float64)
+    vectors = lonlat_to_unit_vectors(lons, lats)
+    tree = cKDTree(vectors)
+
+    radii = craters["radius_m"].to_numpy(dtype=np.float64)
+    fi = craters["freshness_index"].to_numpy(dtype=np.float64)
+    ellip = craters["ellipticity"].to_numpy(dtype=np.float64)
+    orient = craters["orientation_deg"].to_numpy(dtype=np.float64)
+    reliable = craters["shape_reliable"].to_numpy(dtype=bool)
+
+    min_fi = config.min_freshness
+    min_depth = config.min_depth_proxy
+    depth_proxy = (
+        craters["depth_proxy"].to_numpy(dtype=np.float64)
+        if "depth_proxy" in craters.columns
+        else np.ones(n)
+    )
+
+    best = 0.0
+
+    for i in range(n):
+        if fi[i] < min_fi or depth_proxy[i] < min_depth:
+            continue
+
+        v_i = vectors[i]
+        v_pred, pred_sep_rad = _predict_search_center(
+            v_i, float(ellip[i]), float(orient[i]), bool(reliable[i])
+        )
+
+        if reliable[i] and np.isfinite(ellip[i]) and ellip[i] > 1.0:
+            cone_deg = config.search_cone_half_deg_reliable
+            v_pred_opp = predict_exit_point(
+                v_i,
+                np.deg2rad(90.0 - orient[i]) + np.pi,
+                pred_sep_rad,
+            )
+            search_centers = [v_pred, v_pred_opp]
+        else:
+            cone_deg = config.search_cone_half_deg_unreliable
+            search_centers = [v_pred]
+
+        cone_rad = np.deg2rad(cone_deg)
+        euclidean_radius = 2.0 * np.sin(cone_rad / 2.0)
+
+        for v_center in search_centers:
+            candidates = tree.query_ball_point(v_center, euclidean_radius)
+
+            for j in candidates:
+                if j <= i:
+                    continue
+
+                if fi[j] < min_fi or depth_proxy[j] < min_depth:
+                    continue
+                if abs(fi[i] - fi[j]) > config.max_freshness_diff:
+                    continue
+                if abs(radii[i] - radii[j]) > config.max_radius_diff_m:
+                    continue
+
+                sep = angular_separation_deg(v_i, vectors[j])
+                if sep < config.min_chord_sep_deg:
+                    continue
+
+                result = score_pair(
+                    sep_deg=sep,
+                    radius_a_m=float(radii[i]),
+                    radius_b_m=float(radii[j]),
+                    fi_a=float(fi[i]),
+                    fi_b=float(fi[j]),
+                    ellipticity_a=float(ellip[i]),
+                    ellipticity_b=float(ellip[j]),
+                    orientation_a_deg=float(orient[i]),
+                    orientation_b_deg=float(orient[j]),
+                    shape_reliable_a=bool(reliable[i]),
+                    shape_reliable_b=bool(reliable[j]),
+                    v_a=v_i,
+                    v_b=vectors[j],
+                    config=config,
+                )
+
+                s = result["score"]
+                if s > best:
+                    best = s
+
+    return best
+
+
 def select_top_nonoverlapping_pairs(
     pairs: pd.DataFrame,
     top_k: int = 50,

@@ -226,8 +226,8 @@ NULL_JOB_ID=$(sbatch \
     --job-name=mp_run_null \
     --output="${NULL_LOG_DIR}/null_%A_%a.out" \
     --error="${NULL_LOG_DIR}/null_%A_%a.err" \
-    --time=24:00:00 \
-    --mem=64G \
+    --time=04:00:00 \
+    --mem=4G \
     --cpus-per-task=1 \
     --array="0-${NULL_ARRAY_END}" \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \

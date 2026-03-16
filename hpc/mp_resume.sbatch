@@ -267,7 +267,7 @@ echo "Null chunks:      $NULL_CHUNK_COUNT"
 echo "Progress (sec):   $PROGRESS_INTERVAL_SEC"
 echo "Cache dir:        $CACHE_DIR"
 echo "Python bin:       $PYTHON_BIN"
-echo "Null memory:      64G (sequential, 1 CPU per chunk)"
+echo "Null memory:      4G (sequential, 1 CPU per chunk)"
 echo "================================================================"
 echo ""
 echo "── Previous Run Accounting ──────────────────────────────────────"
@@ -439,8 +439,8 @@ if [ "$NULL_DONE" -eq 0 ]; then
             --job-name=mp_resume_null \
             --output="${NULL_LOG_DIR}/null_%A_%a.out" \
             --error="${NULL_LOG_DIR}/null_%A_%a.err" \
-            --time=24:00:00 \
-            --mem=64G \
+            --time=04:00:00 \
+            --mem=4G \
             --cpus-per-task=1 \
             --array="0-${NULL_ARRAY_END}" \
             "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
@@ -513,8 +513,8 @@ EOF
                 --job-name=mp_resume_null \
                 --output="${NULL_LOG_DIR}/null_%A_%a.out" \
                 --error="${NULL_LOG_DIR}/null_%A_%a.err" \
-                --time=24:00:00 \
-                --mem=64G \
+                --time=04:00:00 \
+                --mem=4G \
                 --cpus-per-task=1 \
                 --array="0-${NULL_ARRAY_END}" \
                 "$NULL_WRAPPER"

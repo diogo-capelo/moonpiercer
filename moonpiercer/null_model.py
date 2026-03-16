@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from moonpiercer.config import ChordConfig
-from moonpiercer.pairing import build_chord_pairs
+from moonpiercer.pairing import max_pair_score
 
 
 # ======================================================================
@@ -100,10 +100,14 @@ def null_model_best_scores(
     """Run the null model and return the best score from each trial.
 
     Each trial randomises crater positions on the sphere (preserving all
-    other attributes), runs the full pairing algorithm, and records the
-    best score found.  Large intermediate objects (pairs DataFrame,
-    randomised catalogue) are explicitly deleted after each trial to
-    prevent memory doubling between iterations.
+    other attributes), then computes the maximum pair score using the
+    memory-efficient ``max_pair_score`` function (O(1) pair storage).
+
+    Before the trial loop, the catalogue is pre-filtered to craters that
+    meet the pairing thresholds (FI >= min_freshness, depth >= min_depth).
+    Non-qualifying craters never participate in any pair, so excluding
+    them is mathematically equivalent but dramatically reduces the
+    kd-tree size and query time.
 
     Parameters
     ----------
@@ -146,28 +150,50 @@ def null_model_best_scores(
     if trial_count == 0:
         return np.array([], dtype=np.float64)
 
+    # ------------------------------------------------------------------
+    # Pre-filter to craters eligible for pairing.
+    # build_chord_pairs / max_pair_score skip craters with FI < min_fi
+    # or depth < min_depth anyway, so excluding them upfront only
+    # removes dead weight from the kd-tree and query loops.
+    # ------------------------------------------------------------------
+    mask = craters["freshness_index"] >= config.min_freshness
+    if "depth_proxy" in craters.columns:
+        mask &= craters["depth_proxy"] >= config.min_depth_proxy
+    qualifying = craters[mask].reset_index(drop=True)
+    n_qualifying = len(qualifying)
+
+    print(
+        f"[null_model] Pre-filtered to {n_qualifying:,d} qualifying craters "
+        f"(from {len(craters):,d})",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    if n_qualifying < 2:
+        print(
+            "[null_model] Fewer than 2 qualifying craters — all null scores will be 0.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return np.zeros(len(child_seeds), dtype=np.float64)
+
     total_trials = len(child_seeds)
     use_progress = progress_interval_sec is not None and progress_interval_sec > 0
-    n = len(craters)
     best_scores = np.zeros(total_trials, dtype=np.float64)
     t_start = time.monotonic()
     next_report = t_start + progress_interval_sec if use_progress else None
 
     for trial, cs in enumerate(child_seeds):
         rng = np.random.default_rng(cs)
-        rand_lon, rand_lat = _random_positions_on_sphere(n, rng)
-        random_cat = craters.copy()
+        rand_lon, rand_lat = _random_positions_on_sphere(n_qualifying, rng)
+        random_cat = qualifying.copy()
         random_cat["lon_deg"] = rand_lon
         random_cat["lat_deg"] = rand_lat
 
-        pairs = build_chord_pairs(random_cat, config)
-        best_scores[trial] = float(pairs["score"].max()) if len(pairs) > 0 else 0.0
+        best_scores[trial] = max_pair_score(random_cat, config)
 
-        # Explicitly free large objects before the next trial.  Without
-        # this, the old pairs DataFrame (potentially ~20 GB) remains
-        # allocated while the next call to build_chord_pairs allocates a
-        # fresh one, causing peak memory to double and triggering OOM.
-        del pairs, random_cat, rand_lon, rand_lat
+        # Explicitly free large objects before the next trial.
+        del random_cat, rand_lon, rand_lat
 
         if next_report is not None and time.monotonic() >= next_report:
             done = trial + 1
