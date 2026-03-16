@@ -10,72 +10,61 @@ computes a Freshness Index for each detection, and matches crater pairs using a
 shape-directed spherical geometry search. Significance is assessed against a
 Monte Carlo null model with Benjamini-Hochberg FDR correction.
 
-## Pipeline Workflow
+## How It Works
 
-The pipeline runs in three stages, orchestrated as dependent SLURM jobs:
+### 1 — Crater Detection
 
-### Stage 1 — Build Manifest
+Each 1200 m × 1200 m image chip (1024 × 1024 px, NAC) is processed
+independently:
 
-**Script:** `hpc/manifest.py`
+- Scale-normalised LoG filtering across 6 octaves targets craters with
+  apparent radii of 1–10 m.
+- Non-maximum suppression removes duplicate detections.
+- Intensity moments characterise each crater's ellipticity and orientation.
+- **Freshness Index** `FI = 0.7 × NLS + 0.3 × RCR` quantifies crater age
+  relative to the local terrain (higher = fresher).
 
-Sweeps the full lunar sphere on a configurable lon/lat grid (default 1.5° step,
-latitudes ±85°), querying the Lunar Mapping and Modeling Portal WMS for NAC
-observation metadata. Deduplicates by `product_id`, keeping the
-highest-resolution observation per location. Performs stratified spatial
-selection (15° bins) to ensure uniform coverage, then outputs a manifest CSV
-listing up to `max_chips` chips sorted by resolution.
+### 2 — Chord Pairing
 
-**Outputs:** `results/moonpiercer_run/manifest.csv`,
-`results/moonpiercer_run/manifest_summary.json`
+For each fresh crater (`FI ≥ 0.15`, depth proxy `≥ 0.22`):
 
-### Stage 2 — Chip Processing
+- Its ellipticity and orientation encode the chord direction. A predicted
+  exit point is computed on the unit sphere.
+- A kd-tree query finds candidates within a search cone around the
+  prediction (2° for shape-reliable craters, 10° otherwise).
+- Candidate pairs are scored on six criteria: diametrality, radius match,
+  freshness match, ellipticity match, orientation alignment, and velocity
+  plausibility under the Standard Halo Model Maxwell-Boltzmann PBH
+  velocity distribution.
 
-**Script:** `hpc/chip_worker.py` (via SLURM array job; each task may process
-multiple chips when the total exceeds the array size limit)
+### 3 — Statistical Significance
 
-For each manifest row:
+The null hypothesis is that any apparent pairing is due to chance alignment.
+For each of N Monte Carlo trials:
 
-1. Computes a bounding box around the chip centre (default 1200 m span).
-2. Fetches NAC grayscale imagery (1024×1024 px) and LOLA elevation (256×256 px)
-   from WMS.
-3. Runs scale-normalised LoG crater detection (target radius 1–10 m) with
-   non-maximum suppression and shape characterisation via intensity moments.
-4. Computes the Freshness Index (FI = 0.7 × NLS + 0.3 × RCR).
-5. Maps pixel coordinates to selenographic (lon, lat).
-6. Saves per-chip `craters.csv`, `metadata.json`, and optionally an annotated
-   PNG.
+- Crater positions are randomised uniformly on the sphere while preserving
+  all physical attributes.
+- Only craters satisfying the freshness and depth cuts are randomised
+  (pre-filtering reduces the kd-tree from ~435 k to ~thousands of entries,
+  making each trial take seconds rather than hours).
+- The maximum pair score across the randomised catalog is recorded.
 
-Each chip is fully independent — this stage is embarrassingly parallel.
+The real top-pair scores are compared against this null distribution to
+compute empirical p-values. Benjamini-Hochberg FDR correction is applied at
+α = 0.05 to control the false-discovery rate.
 
-**Outputs per chip:** `results/moonpiercer_run/chips/chip_XXXX/{craters.csv,
-metadata.json}`
+## Pipeline Stages
 
-### Stage 3 — Global Aggregation
+The full run is split into three dependent SLURM stages:
 
-**Script:** `hpc/global_aggregation.py`
+| Stage | Script | What it does |
+|-------|--------|--------------|
+| **prep** | `global_aggregation.py --mode prep` | Reads all chip catalogs, runs pairing, saves `craters.pkl` + `top_pairs.csv` |
+| **null** | `global_aggregation.py --mode null` | One SLURM array job per null chunk; each writes `null_scores_part_XXXXX.npy` |
+| **final** | `global_aggregation.py --mode final` | Assembles null chunks, computes p-values, writes final outputs |
 
-1. Discovers and concatenates all per-chip crater catalogues.
-2. Runs chord-based pairing: for each sufficiently fresh crater (FI ≥ 0.15),
-   infers chord direction from ellipticity and orientation, predicts the exit
-   point on the sphere, and searches a kd-tree around the prediction.
-3. Scores pairs on diametrality, radius match, freshness match, ellipticity
-   match, orientation alignment, and velocity plausibility.
-4. Selects the top non-overlapping pairs (default 50).
-5. Runs a Monte Carlo null model (default 2000 trials): randomises crater
-   positions while preserving attributes, re-runs pairing, and records the best
-   score per trial.
-6. Computes empirical p-values and applies Benjamini-Hochberg FDR correction
-   (default α = 0.05).
-
-**Outputs:** `results/moonpiercer_run/global/{all_pairs_scored.csv,
-significant_pairs.csv, null_best_scores.npy, global_summary.json}`
-
-### Post-Run Analysis
-
-The Jupyter notebook `notebooks/analysis.ipynb` loads HPC results and generates
-all figures (methodology diagrams, spatial coverage maps, score distributions,
-chord maps, sensitivity analysis). Figures are saved to `plots/pdf/` and
-`plots/png/`.
+All stages are checkpointed. A resume run detects which null chunks are missing
+and resubmits only those.
 
 ## Installation
 
@@ -92,44 +81,24 @@ pip install -e ".[dev]"   # includes pytest
 pytest tests/
 ```
 
-## HPC Environment Setup
+## HPC Setup
 
-The sbatch scripts rely on the cluster's module system (`module load python`)
-to provide a Python interpreter with the scientific stack (numpy, scipy, pandas,
-matplotlib, Pillow, requests, PyYAML). This is the same approach used by the
-predecessor pipeline and avoids architecture mismatches on heterogeneous
-clusters.
-
-### Prerequisites
-
-The cluster's `python` module must provide Python ≥ 3.10 with the required
-packages. If any are missing, install them once from a login node:
+The sbatch scripts use the cluster module system (`module load python`) for the
+scientific stack. If any packages are missing, install them once from a login
+node:
 
 ```bash
 module load python
 pip install --user numpy scipy pandas matplotlib Pillow requests PyYAML
-pip install --user -e .   # moonpiercer itself
+pip install --user -e .
 ```
-
-### Environment variable overrides
-
-All optional:
-
-| Variable | Description |
-|---|---|
-| `MOONPIERCER_PYTHON_BIN` | Skip detection; use this Python interpreter directly |
-| `MOONPIERCER_PROJECT_DIR` | Project root (for PYTHONPATH) |
 
 ## HPC Submission
 
-Three sbatch scripts are provided for SLURM clusters:
-
 ### Quick Test
 
-Runs a minimal pipeline (20 chips, 100 null-model trials) focused on the
-equatorial band (±15° latitude) to validate that the full three-stage workflow
-completes and produces outputs suitable for the analysis notebook. Takes
-roughly 1–2 hours end-to-end.
+20 chips, 100 null trials, equatorial band (±15°). Validates the full workflow
+end-to-end in ~1–2 hours.
 
 ```bash
 sbatch hpc/mp_test.sbatch
@@ -137,11 +106,7 @@ sbatch hpc/mp_test.sbatch
 
 ### Full Run
 
-Maximum-coverage production run (15,000 chips, 1.5° grid, 2,000 MC trials).
-Chip processing is distributed across a single SLURM array job of up to 999
-tasks, with each task processing multiple chips sequentially
-(`ceil(15000 / 999) = 16` chips per task). Typical wall time: ~70 hours
-end-to-end.
+15,000 chips, 1.5° grid, null trials distributed across a 999-task SLURM array.
 
 ```bash
 sbatch hpc/mp_run.sbatch
@@ -149,21 +114,16 @@ sbatch hpc/mp_run.sbatch
 
 ### Resume Run
 
-Resumes a pipeline by inspecting the results directory, submitting only missing
-chip tasks, missing null chunks, and final aggregation as needed. Results are
-written into the same folder.
+Inspects an existing results directory and resubmits only what is missing
+(chips, null chunks, final aggregation).
 
 ```bash
 sbatch hpc/mp_resume.sbatch results/moonpiercer_full_run
 ```
 
-The actual chip count is read directly from the manifest CSV, so no
-`MOONPIERCER_MAX_CHIPS` override is needed.
-
 ### Environment Variable Overrides
 
-All optional. Apply to `mp_run.sbatch` (and most are respected by
-`mp_resume.sbatch`):
+All optional:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -171,13 +131,11 @@ All optional. Apply to `mp_run.sbatch` (and most are respected by
 | `MOONPIERCER_GRID_STEP` | 1.5 | Sweep grid step in degrees |
 | `MOONPIERCER_MAX_WORKERS` | 8 | Manifest build thread count |
 | `MOONPIERCER_RANDOM_TRIALS` | 2000 | Null model MC trials |
-| `MOONPIERCER_ARRAY_SIZE` | 999 | Max SLURM array size |
-| `MOONPIERCER_NULL_WORKERS` | 1 | Workers per null chunk |
+| `MOONPIERCER_ARRAY_SIZE` | 999 | Max SLURM array size (= null chunk count) |
 | `MOONPIERCER_PROGRESS_INTERVAL_SEC` | 300 | Progress log interval |
-| `MOONPIERCER_RESUME` | 0 | Use checkpoints (mp_run); mp_resume defaults to 1 |
+| `MOONPIERCER_RESUME` | 0 | Use checkpoints in `mp_run`; `mp_resume` defaults to 1 |
 | `MOONPIERCER_CACHE_DIR` | `./cache` | WMS disk cache directory |
-
-Example with overrides:
+| `MOONPIERCER_PYTHON_BIN` | *(auto)* | Skip detection; use this interpreter directly |
 
 ```bash
 MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/mp_run.sbatch
@@ -185,29 +143,24 @@ MOONPIERCER_MAX_CHIPS=500 MOONPIERCER_RANDOM_TRIALS=1000 sbatch hpc/mp_run.sbatc
 
 ### Monitoring
 
-View logs:
-
 ```bash
-# Manifest stage
-cat results/slurm_logs/manifest_<JOBID>.out
+# Live progress (updates every 60 s)
+python hpc/progress.py results/moonpiercer_full_run --watch 60
 
-# Chip processing (in dedicated subfolder)
-cat results/slurm_logs/chip_logs/chip_<JOBID>_<TASKID>.out
+# SLURM queue
+squeue -u $USER
 
-# Global aggregation (mp_run: prep / null / final)
-cat results/slurm_logs/global_prep_<JOBID>.out
-cat results/slurm_logs/null_<JOBID>_<TASKID>.out
-cat results/slurm_logs/global_final_<JOBID>.out
-
-# Global aggregation (mp_test)
-cat results/slurm_logs/global_<JOBID>.out
+# Stage logs
+cat results/slurm_logs/stage_logs/global_prep_<JOBID>.out
+cat results/slurm_logs/null_logs/null_<JOBID>_<TASKID>.out
+cat results/slurm_logs/stage_logs/global_final_<JOBID>.out
 ```
 
 ### After a Run
 
 Open `notebooks/analysis.ipynb` to generate figures and review results. The
 notebook auto-detects whether HPC outputs are present and falls back to
-methodology-only figures if not.
+methodology-only figures otherwise.
 
 ## Project Structure
 
@@ -215,30 +168,33 @@ methodology-only figures if not.
 moonpiercer/
 ├── hpc/
 │   ├── setup_env.sh                 # Environment bootstrap (module + venv)
-│   ├── mp_test.sbatch               # Quick test (equatorial)
-│   ├── mp_run.sbatch                # Full-coverage run (15000 chips)
+│   ├── mp_test.sbatch               # Quick test (equatorial, 20 chips)
+│   ├── mp_run.sbatch                # Full-coverage run (15 000 chips)
 │   ├── mp_resume.sbatch             # Resume from existing results
 │   ├── manifest.py                  # Stage 1: build chip manifest
 │   ├── chip_worker.py               # Stage 2: per-chip crater detection
-│   └── global_aggregation.py        # Stage 3: pairing, null model, significance
-├── moonpiercer/                 # Core library
-│   ├── config.py                # ChordConfig dataclass
-│   ├── constants.py             # Physical constants
-│   ├── detection.py             # LoG crater detection + shape characterisation
-│   ├── freshness.py             # Freshness Index computation
-│   ├── geometry.py              # Spherical geometry and transforms
-│   ├── io_utils.py              # CSV/JSON/figure I/O
-│   ├── null_model.py            # Monte Carlo null model + BH-FDR
-│   ├── pairing.py               # Chord-based pair matching and scoring
-│   ├── velocity.py              # PBH velocity model
-│   ├── plotting.py              # Visualisation utilities
-│   └── wms.py                   # WMS client for LROC NAC and LOLA
-├── tests/                       # Unit tests (pytest)
+│   ├── global_aggregation.py        # Stage 3: pairing, null model, significance
+│   └── progress.py                  # Pipeline progress reporter
+├── moonpiercer/                     # Core library
+│   ├── config.py                    # ChordConfig dataclass
+│   ├── constants.py                 # Physical constants
+│   ├── detection.py                 # LoG crater detection + shape characterisation
+│   ├── freshness.py                 # Freshness Index computation
+│   ├── geometry.py                  # Spherical geometry and transforms
+│   ├── io_utils.py                  # CSV/JSON/figure I/O
+│   ├── null_model.py                # Monte Carlo null model + BH-FDR
+│   ├── pairing.py                   # Chord-based pair matching and scoring
+│   ├── velocity.py                  # PBH velocity model
+│   ├── plotting.py                  # Visualisation utilities
+│   └── wms.py                       # WMS client for LROC NAC and LOLA
+├── tests/                           # Unit tests (pytest)
 ├── notebooks/
-│   └── analysis.ipynb           # Post-run analysis and figure generation
-├── plots/                       # Output figures (pdf/, png/)
-├── results/                     # Pipeline outputs
+│   └── analysis.ipynb               # Post-run analysis and figure generation
+├── plots/                           # Output figures (pdf/, png/)
+├── results/                         # Pipeline outputs
 │   └── slurm_logs/
-│       └── chip_logs/           # Chip array task logs (separate subfolder)
-└── pyproject.toml               # Package metadata and dependencies
+│       ├── chip_logs/               # Chip array task logs
+│       ├── null_logs/               # Null model array logs
+│       └── stage_logs/              # Prep / final aggregation logs
+└── pyproject.toml                   # Package metadata and dependencies
 ```
