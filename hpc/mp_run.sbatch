@@ -26,7 +26,6 @@
 #   MOONPIERCER_MAX_WORKERS    — manifest build thread count (default: 8)
 #   MOONPIERCER_RANDOM_TRIALS  — null model MC trials (default: 2000)
 #   MOONPIERCER_ARRAY_SIZE     — max SLURM array size (default: 999)
-#   MOONPIERCER_NULL_WORKERS   — multiprocessing workers per null chunk (default: 1)
 #   MOONPIERCER_PROGRESS_INTERVAL_SEC — progress log interval (default: 300)
 #   MOONPIERCER_RESUME         — set to 1 to resume from checkpoints
 #   MOONPIERCER_CACHE_DIR      — WMS disk cache directory (default: ./cache)
@@ -60,7 +59,6 @@ GRID_STEP="${MOONPIERCER_GRID_STEP:-1.5}"
 MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-8}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
 ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
-NULL_WORKERS="${MOONPIERCER_NULL_WORKERS:-1}"
 PROGRESS_INTERVAL_SEC="${MOONPIERCER_PROGRESS_INTERVAL_SEC:-300}"
 RESUME_FLAG=""
 if [ "${MOONPIERCER_RESUME:-0}" -eq 1 ]; then
@@ -105,7 +103,6 @@ echo "Max workers:    $MAX_WORKERS"
 echo "Random trials:  $RANDOM_TRIALS"
 echo "Array size:     $ARRAY_SIZE"
 echo "Null chunks:    $NULL_CHUNK_COUNT"
-echo "Null workers:   $NULL_WORKERS"
 echo "Progress (sec): $PROGRESS_INTERVAL_SEC"
 echo "Cache dir:      $CACHE_DIR"
 echo "Python bin:     $PYTHON_BIN"
@@ -230,8 +227,8 @@ NULL_JOB_ID=$(sbatch \
     --output="${NULL_LOG_DIR}/null_%A_%a.out" \
     --error="${NULL_LOG_DIR}/null_%A_%a.err" \
     --time=24:00:00 \
-    --mem=32G \
-    --cpus-per-task="${NULL_WORKERS}" \
+    --mem=64G \
+    --cpus-per-task=1 \
     --array="0-${NULL_ARRAY_END}" \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
         --mode null \
@@ -242,7 +239,6 @@ NULL_JOB_ID=$(sbatch \
         --random-seed 42 \
         --fdr-alpha 0.05 \
         --top-pairs 50 \
-        --null-model-workers "${NULL_WORKERS}" \
         --null-chunk-count "${NULL_CHUNK_COUNT}" \
         --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
         ${RESUME_FLAG}

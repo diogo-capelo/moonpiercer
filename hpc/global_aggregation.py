@@ -84,13 +84,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Random seed for reproducibility.",
     )
     parser.add_argument(
-        "--null-model-workers",
-        type=int,
-        default=1,
-        metavar="W",
-        help="Parallel processes for null-model trials (default: 1 = sequential).",
-    )
-    parser.add_argument(
         "--fdr-alpha",
         type=float,
         default=0.05,
@@ -462,7 +455,6 @@ def _run_full(args: argparse.Namespace) -> int:
     random_seed: int = args.random_seed
     fdr_alpha: float = args.fdr_alpha
     top_pairs: int = args.top_pairs
-    null_model_workers: int = args.null_model_workers
     progress_interval_sec: float | None = (
         args.progress_interval_sec if args.progress_interval_sec and args.progress_interval_sec > 0 else None
     )
@@ -549,8 +541,7 @@ def _run_full(args: argparse.Namespace) -> int:
     # Step 6: null model
     # ------------------------------------------------------------------
     _print_section(
-        f"Running null model ({random_trials:,d} trials, seed={random_seed}, "
-        f"workers={null_model_workers})"
+        f"Running null model ({random_trials:,d} trials, seed={random_seed})"
     )
     t_null_start = time.monotonic()
     null_scores = null_model_best_scores(
@@ -558,7 +549,6 @@ def _run_full(args: argparse.Namespace) -> int:
         config=config,
         n_trials=random_trials,
         seed=random_seed,
-        n_workers=null_model_workers,
         progress_interval_sec=progress_interval_sec,
     )
     t_null_elapsed = time.monotonic() - t_null_start
@@ -873,7 +863,6 @@ def _run_null(args: argparse.Namespace) -> int:
         config=config,
         n_trials=total_trials,
         seed=args.random_seed,
-        n_workers=args.null_model_workers,
         trial_offset=start,
         trial_count=count,
         progress_interval_sec=progress_interval_sec,

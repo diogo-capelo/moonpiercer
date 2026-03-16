@@ -21,7 +21,6 @@
 # Environment overrides (optional):
 #   MOONPIERCER_RANDOM_TRIALS         — null model MC trials (default: 2000)
 #   MOONPIERCER_ARRAY_SIZE            — max SLURM array size (default: 999)
-#   MOONPIERCER_NULL_WORKERS          — multiprocessing workers per null chunk (default: 1)
 #   MOONPIERCER_PROGRESS_INTERVAL_SEC — progress log interval (default: 300)
 #   MOONPIERCER_RESUME                — set to 0 to force recompute (default: 1)
 #   MOONPIERCER_CACHE_DIR             — WMS disk cache directory (default: ./cache)
@@ -99,7 +98,6 @@ fi
 # ─── Configuration ──────────────────────────────────────────────────────────
 
 ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
-NULL_WORKERS="${MOONPIERCER_NULL_WORKERS:-1}"
 PROGRESS_INTERVAL_SEC="${MOONPIERCER_PROGRESS_INTERVAL_SEC:-300}"
 
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
@@ -269,6 +267,7 @@ echo "Null chunks:      $NULL_CHUNK_COUNT"
 echo "Progress (sec):   $PROGRESS_INTERVAL_SEC"
 echo "Cache dir:        $CACHE_DIR"
 echo "Python bin:       $PYTHON_BIN"
+echo "Null memory:      64G (sequential, 1 CPU per chunk)"
 echo "================================================================"
 echo ""
 echo "── Previous Run Accounting ──────────────────────────────────────"
@@ -441,8 +440,8 @@ if [ "$NULL_DONE" -eq 0 ]; then
             --output="${NULL_LOG_DIR}/null_%A_%a.out" \
             --error="${NULL_LOG_DIR}/null_%A_%a.err" \
             --time=24:00:00 \
-            --mem=32G \
-            --cpus-per-task="${NULL_WORKERS}" \
+            --mem=64G \
+            --cpus-per-task=1 \
             --array="0-${NULL_ARRAY_END}" \
             "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
                 --mode null \
@@ -453,7 +452,6 @@ if [ "$NULL_DONE" -eq 0 ]; then
                 --random-seed "${RANDOM_SEED}" \
                 --fdr-alpha "${FDR_ALPHA}" \
                 --top-pairs "${TOP_PAIRS}" \
-                --null-model-workers "${NULL_WORKERS}" \
                 --null-chunk-count "${NULL_CHUNK_COUNT}" \
                 --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
                 ${RESUME_FLAG}
@@ -475,7 +473,6 @@ set -euo pipefail
 : "${RANDOM_SEED:?Missing RANDOM_SEED}"
 : "${FDR_ALPHA:?Missing FDR_ALPHA}"
 : "${TOP_PAIRS:?Missing TOP_PAIRS}"
-: "${NULL_WORKERS:?Missing NULL_WORKERS}"
 : "${NULL_CHUNK_COUNT:?Missing NULL_CHUNK_COUNT}"
 : "${PROGRESS_INTERVAL_SEC:?Missing PROGRESS_INTERVAL_SEC}"
 
@@ -501,7 +498,6 @@ echo "[resume] Processing missing null chunk ${chunk_idx}"
     --random-seed "${RANDOM_SEED}" \
     --fdr-alpha "${FDR_ALPHA}" \
     --top-pairs "${TOP_PAIRS}" \
-    --null-model-workers "${NULL_WORKERS}" \
     --null-chunk-count "${NULL_CHUNK_COUNT}" \
     --null-chunk-index "${chunk_idx}" \
     --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
@@ -512,14 +508,14 @@ EOF
             NULL_ARRAY_END=$((MISSING_NULL_COUNT - 1))
             NULL_JOB_ID=$(sbatch \
                 --parsable \
-                --export=ALL,MISSING_NULL_FILE="${MISSING_NULL_FILE}",HPC_DIR="${HPC_DIR}",CHIP_RESULTS_DIR="${CHIP_RESULTS_DIR}",GLOBAL_OUTPUT_DIR="${GLOBAL_OUTPUT_DIR}",CHECKPOINT_DIR="${CHECKPOINT_DIR}",RANDOM_TRIALS="${RANDOM_TRIALS}",RANDOM_SEED="${RANDOM_SEED}",FDR_ALPHA="${FDR_ALPHA}",TOP_PAIRS="${TOP_PAIRS}",NULL_WORKERS="${NULL_WORKERS}",NULL_CHUNK_COUNT="${NULL_CHUNK_COUNT}",PROGRESS_INTERVAL_SEC="${PROGRESS_INTERVAL_SEC}",RESUME_FLAG="${RESUME_FLAG}" \
+                --export=ALL,MISSING_NULL_FILE="${MISSING_NULL_FILE}",HPC_DIR="${HPC_DIR}",CHIP_RESULTS_DIR="${CHIP_RESULTS_DIR}",GLOBAL_OUTPUT_DIR="${GLOBAL_OUTPUT_DIR}",CHECKPOINT_DIR="${CHECKPOINT_DIR}",RANDOM_TRIALS="${RANDOM_TRIALS}",RANDOM_SEED="${RANDOM_SEED}",FDR_ALPHA="${FDR_ALPHA}",TOP_PAIRS="${TOP_PAIRS}",NULL_CHUNK_COUNT="${NULL_CHUNK_COUNT}",PROGRESS_INTERVAL_SEC="${PROGRESS_INTERVAL_SEC}",RESUME_FLAG="${RESUME_FLAG}" \
                 "${DEP_OPTS[@]}" \
                 --job-name=mp_resume_null \
-                --output="${LOG_DIR}/null_%A_%a.out" \
-                --error="${LOG_DIR}/null_%A_%a.err" \
+                --output="${NULL_LOG_DIR}/null_%A_%a.out" \
+                --error="${NULL_LOG_DIR}/null_%A_%a.err" \
                 --time=24:00:00 \
-                --mem=32G \
-                --cpus-per-task="${NULL_WORKERS}" \
+                --mem=64G \
+                --cpus-per-task=1 \
                 --array="0-${NULL_ARRAY_END}" \
                 "$NULL_WRAPPER"
             )

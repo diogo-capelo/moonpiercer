@@ -174,13 +174,6 @@ class ChordConfig:
     null_quantile: float = 0.95
     """Quantile of the null best-score distribution for threshold."""
 
-    null_model_workers: int = 1
-    """Number of parallel processes for null-model trials.
-
-    Each trial is independent (embarrassingly parallel).  Set to the
-    number of available CPU cores for maximum throughput.  Default 1
-    runs trials sequentially (original behaviour)."""
-
     # ------------------------------------------------------------------
     # Topographic diffusion
     # ------------------------------------------------------------------
