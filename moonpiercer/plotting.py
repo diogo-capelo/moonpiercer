@@ -6,6 +6,12 @@ All figures are generated with matplotlib and can be saved via
 Methodology figures:
 - Transit cone diagram (2D orthographic projection)
 - Annotated detection chip
+
+Results figures:
+- Score component radar (star) plot
+- Null-model best-score distribution
+- Pair score histogram with null threshold
+- Crater location heatmap with top pairs
 """
 
 from __future__ import annotations
@@ -386,5 +392,245 @@ def plot_chord_map(
 
     ax.grid(True, alpha=0.3)
     ax.set_title(f"Top {n_best} Chord Pairs")
+    fig.tight_layout()
+    return fig
+
+
+# ======================================================================
+# Score component radar (star) plot
+# ======================================================================
+
+def plot_score_component_star(
+    pairs: "pd.DataFrame",
+    n_top: int = 10,
+    figsize: tuple[float, float] = (6, 6),
+) -> "matplotlib.figure.Figure":
+    """Radar plot of mean score-component contributions for the top pairs.
+
+    Each axis represents one of the six scoring terms.  The solid line
+    shows the mean across the top *n_top* pairs and the shaded region
+    spans the mean +/- 1 standard deviation.
+    """
+    import matplotlib.pyplot as plt
+
+    component_cols = [
+        "T_diametrality", "T_radius", "T_freshness",
+        "T_ellipticity", "T_orientation", "T_velocity",
+    ]
+    labels = [
+        r"$T_{\rm diam}$", r"$T_{\rm radius}$", r"$T_{\rm fresh}$",
+        r"$T_{\rm ellip}$", r"$T_{\rm orient}$", r"$T_{\rm vel}$",
+    ]
+
+    top = pairs.head(n_top)
+    available = [c for c in component_cols if c in top.columns]
+    avail_labels = [labels[component_cols.index(c)] for c in available]
+
+    values = top[available].to_numpy(dtype=float)
+    means = np.nanmean(values, axis=0)
+    stds = np.nanstd(values, axis=0)
+
+    n_axes = len(available)
+    angles = np.linspace(0, 2 * np.pi, n_axes, endpoint=False).tolist()
+    # Close the polygon
+    angles += angles[:1]
+    means_closed = np.append(means, means[0])
+    lo = np.append(np.clip(means - stds, 0, 1), np.clip(means[0] - stds[0], 0, 1))
+    hi = np.append(np.clip(means + stds, 0, 1), np.clip(means[0] + stds[0], 0, 1))
+
+    fig, ax = plt.subplots(figsize=figsize, subplot_kw={"projection": "polar"})
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_thetagrids(np.degrees(angles[:-1]), avail_labels)
+
+    ax.plot(angles, means_closed, "o-", color="steelblue", lw=1.8, ms=5, zorder=3)
+    ax.fill_between(angles, lo, hi, alpha=0.20, color="steelblue", zorder=2)
+
+    ax.set_ylim(0, 1.05)
+    ax.set_title(
+        f"Score components (top {min(n_top, len(top))} pairs)",
+        y=1.10, fontsize=11,
+    )
+    fig.tight_layout()
+    return fig
+
+
+# ======================================================================
+# Null-model best-score distribution
+# ======================================================================
+
+def plot_null_distribution(
+    null_scores: np.ndarray,
+    best_real_score: float | None = None,
+    figsize: tuple[float, float] = (7, 4.5),
+) -> "matplotlib.figure.Figure":
+    """Histogram of null-model best scores with the best real score marked.
+
+    Parameters
+    ----------
+    null_scores : array
+        Best score from each Monte Carlo null trial.
+    best_real_score : float, optional
+        Best score from the real crater catalogue.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.hist(
+        null_scores, bins=50, color="0.65", edgecolor="0.45", linewidth=0.4,
+        density=True, zorder=2, label=f"Null trials ($n={len(null_scores)}$)",
+    )
+
+    p95 = np.percentile(null_scores, 95)
+    p99_87 = np.percentile(null_scores, 99.87)  # 3-sigma equivalent
+    ax.axvline(p95, color="0.35", ls="--", lw=1.0,
+               label=r"95th percentile", zorder=3)
+    ax.axvline(p99_87, color="darkorange", ls="--", lw=1.0,
+               label=r"$3\sigma$ threshold", zorder=3)
+
+    if best_real_score is not None:
+        ax.axvline(best_real_score, color="crimson", ls="-", lw=2.0,
+                   label=f"Best real score ({best_real_score:.4f})", zorder=4)
+
+    ax.set_xlabel("Best pair score per trial")
+    ax.set_ylabel("Probability density")
+    ax.set_title("Null-Model Best-Score Distribution")
+    ax.legend(fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    return fig
+
+
+# ======================================================================
+# Pair score histogram with null threshold (Figure 2 style)
+# ======================================================================
+
+def plot_pair_scores_with_threshold(
+    real_scores: np.ndarray,
+    null_scores: np.ndarray,
+    figsize: tuple[float, float] = (7, 4.5),
+) -> "matplotlib.figure.Figure":
+    """Distribution of all real pair scores with the 3-sigma null threshold.
+
+    Mirrors the style of Figure 2 in Caplan et al. — the histogram of
+    pair scores is shown with a vertical line at the 3-sigma (99.87th
+    percentile) threshold derived from the null model.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if len(real_scores) > 0:
+        ax.hist(
+            real_scores, bins=60, color="steelblue", edgecolor="none",
+            alpha=0.8, density=True, zorder=2,
+            label=f"Real pairs ($n={len(real_scores)}$)",
+        )
+
+    if len(null_scores) > 0:
+        thresh_3sig = np.percentile(null_scores, 99.87)
+        ax.axvline(
+            thresh_3sig, color="darkorange", ls="-", lw=2.0, zorder=4,
+            label=rf"Null $3\sigma$ threshold ({thresh_3sig:.4f})",
+        )
+
+    if len(real_scores) > 0:
+        best = real_scores.max()
+        ax.axvline(
+            best, color="crimson", ls="--", lw=1.5, zorder=4,
+            label=f"Best pair ({best:.4f})",
+        )
+
+    ax.set_xlabel("Pair score")
+    ax.set_ylabel("Probability density")
+    ax.set_title("Pair Score Distribution vs Null Threshold")
+    ax.legend(fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    return fig
+
+
+# ======================================================================
+# Crater heatmap with top-pair locations
+# ======================================================================
+
+def plot_crater_map_with_pairs(
+    craters: "pd.DataFrame",
+    pairs: "pd.DataFrame",
+    n_best: int = 10,
+    figsize: tuple[float, float] = (12, 6),
+) -> "matplotlib.figure.Figure":
+    """Mollweide map of all craters with top-pair locations highlighted.
+
+    All craters are shown as small grey dots.  Entry and exit craters of
+    the top *n_best* pairs are shown as larger markers colour-coded by
+    rank (best = brightest).
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(
+        figsize=figsize, subplot_kw={"projection": "mollweide"},
+    )
+
+    # --- All craters (background) ---
+    if not craters.empty and "lon_deg" in craters.columns:
+        lons_all = np.deg2rad(craters["lon_deg"].to_numpy())
+        lats_all = np.deg2rad(craters["lat_deg"].to_numpy())
+        ax.scatter(
+            lons_all, lats_all, s=0.3, c="0.78", alpha=0.25,
+            rasterized=True, zorder=1,
+        )
+
+    # --- Top pairs ---
+    if not pairs.empty:
+        top = pairs.head(n_best)
+        n_shown = len(top)
+        cmap = plt.cm.plasma_r
+        norm = plt.Normalize(0, max(n_shown - 1, 1))
+
+        for rank, (_, row) in enumerate(top.iterrows()):
+            color = cmap(norm(rank))
+            size_entry = 70 - rank * 4  # best pair = largest
+            size_exit = size_entry
+
+            ax.scatter(
+                np.deg2rad(row["lon_a"]), np.deg2rad(row["lat_a"]),
+                s=size_entry, c=[color], marker="o", edgecolors="k",
+                linewidths=0.5, zorder=3,
+            )
+            ax.scatter(
+                np.deg2rad(row["lon_b"]), np.deg2rad(row["lat_b"]),
+                s=size_exit, c=[color], marker="s", edgecolors="k",
+                linewidths=0.5, zorder=3,
+            )
+
+            # Great-circle arc
+            v1 = lonlat_to_unit_vectors(
+                np.array([row["lon_a"]]), np.array([row["lat_a"]])
+            ).ravel()
+            v2 = lonlat_to_unit_vectors(
+                np.array([row["lon_b"]]), np.array([row["lat_b"]])
+            ).ravel()
+            arc_lons, arc_lats = slerp_arc(v1, v2, n_points=80)
+            ax.plot(
+                np.deg2rad(np.asarray(arc_lons)),
+                np.deg2rad(np.asarray(arc_lats)),
+                "-", color=color, alpha=0.6, lw=1.2, zorder=2,
+            )
+
+        # Colourbar for rank
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, fraction=0.025, pad=0.04, shrink=0.7)
+        cbar.set_label("Pair rank", fontsize=9)
+        cbar.set_ticks(np.arange(0, n_shown, max(1, n_shown // 5)))
+        cbar.set_ticklabels(
+            [f"#{i+1}" for i in range(0, n_shown, max(1, n_shown // 5))]
+        )
+
+    ax.grid(True, alpha=0.3)
+    ax.set_title(
+        f"Crater Detections & Top {n_best} Pairs",
+        fontsize=11,
+    )
     fig.tight_layout()
     return fig
