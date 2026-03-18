@@ -119,7 +119,8 @@ def _characterise_shape(
     """Compute elliptical shape parameters from weighted intensity moments.
 
     Returns a dict with keys:
-        circularity, ellipticity, orientation_deg, shape_reliable
+        circularity, ellipticity, orientation_deg, shape_reliable,
+        orientation_unc_deg, ellipticity_unc
     """
     r = max(3, int(np.ceil(2.5 * radius_px)))
     yc, xc = int(round(y)), int(round(x))
@@ -133,6 +134,8 @@ def _characterise_shape(
         "ellipticity": np.nan,
         "orientation_deg": np.nan,
         "shape_reliable": False,
+        "orientation_unc_deg": np.nan,
+        "ellipticity_unc": np.nan,
     }
     if patch.size < 25:
         return fail
@@ -172,11 +175,31 @@ def _characterise_shape(
 
     shape_reliable = radius_px >= confidence_min_radius_px
 
+    # ------------------------------------------------------------------
+    # Shape measurement uncertainties
+    # ------------------------------------------------------------------
+    # Effective number of independent weighted pixels.
+    inv_sq_sum = float((inv ** 2).sum())
+    n_eff = max(wsum ** 2 / inv_sq_sum, 1.0) if inv_sq_sum > 0 else 1.0
+
+    # Orientation uncertainty: from Fisher information for a 2D Gaussian,
+    #   sigma_theta ≈ (1/sqrt(2*N_eff)) * (major + minor) / |major - minor|
+    # Diverges for circular craters (major ≈ minor), as expected.
+    axis_diff = max(major - minor, 1e-6)
+    orientation_unc_rad = (1.0 / np.sqrt(max(2.0 * n_eff, 1.0))) * (major + minor) / axis_diff
+    orientation_unc_deg = float(np.clip(np.degrees(orientation_unc_rad), 0.1, 180.0))
+
+    # Ellipticity uncertainty: delta(e) ≈ e / sqrt(2*N_eff)
+    # From error propagation on the eigenvalue ratio.
+    ellipticity_unc = float(np.clip(ellipticity / np.sqrt(max(2.0 * n_eff, 1.0)), 0.001, 100.0))
+
     return {
         "circularity": circularity,
         "ellipticity": ellipticity,
         "orientation_deg": orientation_deg,
         "shape_reliable": bool(shape_reliable),
+        "orientation_unc_deg": orientation_unc_deg,
+        "ellipticity_unc": ellipticity_unc,
     }
 
 
@@ -217,6 +240,7 @@ def detect_craters_on_chip(
         mpp_mean,
         target_radius_m=config.target_crater_radius_range_m,
         peak_quantile=config.chip_peak_quantile,
+        n_scales=config.n_scales,
     )
 
     if len(y) == 0:
@@ -276,6 +300,8 @@ def detect_craters_on_chip(
         "ellipticity": [sh["ellipticity"] for sh in shapes],
         "orientation_deg": [sh["orientation_deg"] for sh in shapes],
         "shape_reliable": [sh["shape_reliable"] for sh in shapes],
+        "orientation_unc_deg": [sh["orientation_unc_deg"] for sh in shapes],
+        "ellipticity_unc": [sh["ellipticity_unc"] for sh in shapes],
     })
 
     return df.sort_values("strength", ascending=False).reset_index(drop=True), threshold

@@ -65,6 +65,13 @@ class ChordConfig:
     # Crater detection
     # ------------------------------------------------------------------
     target_crater_radius_range_m: tuple[float, float] = (1.0, 10.0)
+    n_scales: int = 30
+    """Number of LoG scale-space octaves for crater detection.
+
+    More scales give finer radius resolution (at slightly higher compute
+    cost).  With 30 scales over the default 1–10 m range, adjacent
+    scales are ~8% apart, giving sub-metre radius resolution."""
+
     chip_peak_quantile: float = 0.9994
     # NOTE: no max_craters_per_chip — detect ALL passing quality cuts
     min_depth_proxy: float = 0.22
@@ -81,6 +88,17 @@ class ChordConfig:
 
     Below this threshold, ``shape_reliable`` is set to False, and the
     crater's ellipticity and orientation are not used in pairing."""
+
+    # ------------------------------------------------------------------
+    # Position prediction scoring
+    # ------------------------------------------------------------------
+    sigma_position_deg: float = 1.0
+    """Fallback Gaussian width [degrees] for T_position when per-crater
+    shape uncertainties are unavailable (e.g. rescoring old data).
+
+    Used as ``T_position = exp(-(offset / sigma)²)``.  Tighter values
+    penalise pairs whose shape-predicted exit is far from the actual
+    partner position."""
 
     # ------------------------------------------------------------------
     # Freshness index
@@ -107,8 +125,11 @@ class ChordConfig:
     max_freshness_diff: float = 0.30
     """Hard cut: maximum |ΔFI| between paired craters."""
 
-    sigma_freshness: float = 0.12
-    """Gaussian width for the freshness-match scoring term."""
+    sigma_freshness: float = 0.05
+    """Gaussian width for the freshness-match scoring term.
+
+    Freshness Index is continuous and well-resolved, so a tight sigma
+    (strong penalty for mismatches) is appropriate."""
 
     # ------------------------------------------------------------------
     # Chord pairing
@@ -122,8 +143,13 @@ class ChordConfig:
     max_radius_diff_m: float = 2.0
     """Hard cut: maximum radius difference between paired craters [m]."""
 
-    sigma_radius: float = 1.0
-    """Gaussian width for the radius-match scoring term [m]."""
+    sigma_radius: float = 5.0
+    """Gaussian width for the radius-match scoring term [m].
+
+    Crater radii are quantised by the LoG scale space (~30% spacing
+    between adjacent scales at 10 scales), giving ~1 m resolution for
+    typical detections.  A wide sigma down-weights this poorly-resolved
+    measurement relative to better-constrained quantities."""
 
     max_chord_deviation_deg: float = 0.05
     """Hard cut: max angular offset from predicted chord endpoint [degrees].
@@ -142,19 +168,33 @@ class ChordConfig:
 
     When shape is unreliable, we search a wider cone near the antipode."""
 
-    sigma_ellipticity: float = 0.15
-    """Gaussian width for the ellipticity-match scoring term."""
+    sigma_ellipticity: float = 0.08
+    """Gaussian width for the ellipticity-match scoring term.
 
-    sigma_orientation_deg: float = 15.0
-    """Gaussian width for the orientation-match scoring term [degrees]."""
+    Ellipticity encodes the chord incidence angle — a strong physical
+    signal.  Tight penalty rewards pairs whose measured shapes match
+    the geometric prediction from their angular separation."""
+
+    sigma_orientation_deg: float = 8.0
+    """Gaussian width for the orientation-match scoring term [degrees].
+
+    Both craters' major axes should align with the great circle
+    connecting them.  Tighter than the previous 15 deg to better
+    discriminate aligned pairs from coincidental matches."""
 
     prefer_diametrality: bool = True
-    """If True, the scoring function includes T_diametrality = sin(sep/2)."""
+    """If True, the scoring function includes T_diametrality = sin(sep/2)^n."""
+
+    diametrality_exponent: float = 2.0
+    """Exponent for the diametrality term: sin(sep/2)^n.
+
+    Higher values more aggressively penalise non-diametral chords.
+    n=1 is linear, n=2 (default) is quadratic."""
 
     pair_k_neighbors: int = 32
     """kd-tree query size for the nearest-neighbour search."""
 
-    top_pairs_to_report: int = 50
+    top_pairs_to_report: int = 200
     """Number of top non-overlapping pairs to report."""
 
     # ------------------------------------------------------------------

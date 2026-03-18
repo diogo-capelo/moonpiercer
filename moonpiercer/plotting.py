@@ -415,11 +415,11 @@ def plot_score_component_star(
 
     component_cols = [
         "T_diametrality", "T_radius", "T_freshness",
-        "T_ellipticity", "T_orientation", "T_velocity",
+        "T_ellipticity", "T_orientation", "T_position",
     ]
     labels = [
         r"$T_{\rm diam}$", r"$T_{\rm radius}$", r"$T_{\rm fresh}$",
-        r"$T_{\rm ellip}$", r"$T_{\rm orient}$", r"$T_{\rm vel}$",
+        r"$T_{\rm ellip}$", r"$T_{\rm orient}$", r"$T_{\rm pos}$",
     ]
 
     top = pairs.head(n_top)
