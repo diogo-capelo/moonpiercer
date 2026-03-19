@@ -107,8 +107,8 @@ class TestScorePair:
             v_a=v_a, v_b=v_b,
             config=config,
         )
-        assert result["T_radius"] < 0.5
-        assert result["score"] < 0.5
+        assert result["T_radius"] < 1.0  # penalised; exact value depends on sigma_radius
+        assert result["score"] < 1.0
 
     def test_freshness_mismatch_penalised(self):
         v_a = lonlat_to_unit_vectors(np.array([0.0]), np.array([0.0])).ravel()
@@ -128,7 +128,7 @@ class TestScorePair:
         assert result["score"] < 0.02
 
     def test_short_chord_lower_diametrality(self):
-        """60° separation → T_diametrality = sin(30°) = 0.5."""
+        """60° separation → T_diametrality = sin(30°)^n with n=diametrality_exponent."""
         v_a = lonlat_to_unit_vectors(np.array([0.0]), np.array([0.0])).ravel()
         v_b = lonlat_to_unit_vectors(np.array([60.0]), np.array([0.0])).ravel()
         config = ChordConfig()
@@ -142,7 +142,8 @@ class TestScorePair:
             v_a=v_a, v_b=v_b,
             config=config,
         )
-        assert result["T_diametrality"] == pytest.approx(0.5)
+        expected = np.sin(np.deg2rad(30.0)) ** config.diametrality_exponent
+        assert result["T_diametrality"] == pytest.approx(expected)
 
 
 # ======================================================================

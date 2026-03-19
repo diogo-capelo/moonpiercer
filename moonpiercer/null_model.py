@@ -96,7 +96,8 @@ def null_model_best_scores(
     trial_offset: int = 0,
     trial_count: int | None = None,
     progress_interval_sec: float | None = None,
-) -> np.ndarray:
+    save_pair_details: bool = False,
+) -> np.ndarray | tuple[np.ndarray, list[dict]]:
     """Run the null model and return the best score from each trial.
 
     Each trial randomises crater positions on the sphere (preserving all
@@ -124,11 +125,17 @@ def null_model_best_scores(
         Number of trials to run from trial_offset.
     progress_interval_sec : float, optional
         Emit progress logs every N seconds (None/<=0 disables).
+    save_pair_details : bool, optional
+        If True, also return the characteristics of the best-scoring pair
+        from each trial, enabling rescoring with different configs without
+        rerunning the Monte Carlo.
 
     Returns
     -------
     best_scores : array of shape (trial_count,)
         Maximum pair score from each randomised trial.
+    pair_details : list[dict]  *(only if save_pair_details is True)*
+        Characteristics of the best pair from each trial.
     """
     if config is None:
         config = ChordConfig()
@@ -175,11 +182,15 @@ def null_model_best_scores(
             file=sys.stderr,
             flush=True,
         )
-        return np.zeros(len(child_seeds), dtype=np.float64)
+        zeros = np.zeros(len(child_seeds), dtype=np.float64)
+        if save_pair_details:
+            return zeros, [{} for _ in child_seeds]
+        return zeros
 
     total_trials = len(child_seeds)
     use_progress = progress_interval_sec is not None and progress_interval_sec > 0
     best_scores = np.zeros(total_trials, dtype=np.float64)
+    all_details: list[dict] = [] if save_pair_details else []
     t_start = time.monotonic()
     next_report = t_start + progress_interval_sec if use_progress else None
 
@@ -190,7 +201,14 @@ def null_model_best_scores(
         random_cat["lon_deg"] = rand_lon
         random_cat["lat_deg"] = rand_lat
 
-        best_scores[trial] = max_pair_score(random_cat, config)
+        if save_pair_details:
+            score, details = max_pair_score(
+                random_cat, config, return_details=True,
+            )
+            best_scores[trial] = score
+            all_details.append(details)
+        else:
+            best_scores[trial] = max_pair_score(random_cat, config)
 
         # Explicitly free large objects before the next trial.
         del random_cat, rand_lon, rand_lat
@@ -208,6 +226,8 @@ def null_model_best_scores(
             print(msg, file=sys.stderr, flush=True)
             next_report = time.monotonic() + progress_interval_sec
 
+    if save_pair_details:
+        return best_scores, all_details
     return best_scores
 
 

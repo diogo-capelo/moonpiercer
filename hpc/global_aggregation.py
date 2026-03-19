@@ -544,12 +544,13 @@ def _run_full(args: argparse.Namespace) -> int:
         f"Running null model ({random_trials:,d} trials, seed={random_seed})"
     )
     t_null_start = time.monotonic()
-    null_scores = null_model_best_scores(
+    null_scores, null_pair_details = null_model_best_scores(
         craters,
         config=config,
         n_trials=random_trials,
         seed=random_seed,
         progress_interval_sec=progress_interval_sec,
+        save_pair_details=True,
     )
     t_null_elapsed = time.monotonic() - t_null_start
     print(f"  Null model completed in {t_null_elapsed:.1f} s")
@@ -602,10 +603,17 @@ def _run_full(args: argparse.Namespace) -> int:
         # Write an empty CSV so downstream scripts always find the file
         pd.DataFrame(columns=[
             "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
-            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
-            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "separation_deg", "radius_a_m", "radius_b_m",
+            "radius_px_a", "radius_px_b",
+            "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b",
+            "orientation_a_deg", "orientation_b_deg",
+            "orientation_unc_a_deg", "orientation_unc_b_deg",
+            "ellipticity_unc_a", "ellipticity_unc_b",
+            "shape_reliable_a", "shape_reliable_b",
+            "score", "T_diametrality",
             "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
-            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "T_position", "chord_length_m", "expected_ellipticity",
             "p_value", "bh_significant",
         ]).to_csv(all_pairs_path, index=False)
     print(f"  Saved: {all_pairs_path}")
@@ -617,18 +625,29 @@ def _run_full(args: argparse.Namespace) -> int:
     else:
         pd.DataFrame(columns=[
             "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
-            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
-            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "separation_deg", "radius_a_m", "radius_b_m",
+            "radius_px_a", "radius_px_b",
+            "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b",
+            "orientation_a_deg", "orientation_b_deg",
+            "orientation_unc_a_deg", "orientation_unc_b_deg",
+            "ellipticity_unc_a", "ellipticity_unc_b",
+            "shape_reliable_a", "shape_reliable_b",
+            "score", "T_diametrality",
             "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
-            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "T_position", "chord_length_m", "expected_ellipticity",
             "p_value", "bh_significant",
         ]).to_csv(sig_pairs_path, index=False)
     print(f"  Saved: {sig_pairs_path}")
 
-    # 9c: null best scores (binary NumPy array)
+    # 9c: null best scores (binary NumPy array) + pair details
     null_path = output_dir / "null_best_scores.npy"
     np.save(str(null_path), null_scores)
     print(f"  Saved: {null_path}")
+
+    null_details_path = output_dir / "null_pair_details.json"
+    save_json(null_pair_details, null_details_path)
+    print(f"  Saved: {null_details_path}")
 
     # 9d: global summary JSON
     t_total = time.monotonic() - t_start
@@ -858,7 +877,7 @@ def _run_null(args: argparse.Namespace) -> int:
         args.progress_interval_sec if args.progress_interval_sec and args.progress_interval_sec > 0 else None
     )
 
-    null_scores = null_model_best_scores(
+    null_scores, null_pair_details = null_model_best_scores(
         craters,
         config=config,
         n_trials=total_trials,
@@ -866,9 +885,15 @@ def _run_null(args: argparse.Namespace) -> int:
         trial_offset=start,
         trial_count=count,
         progress_interval_sec=progress_interval_sec,
+        save_pair_details=True,
     )
     null_runtime = round(time.monotonic() - t_start, 2)
     np.save(str(part_path), null_scores)
+
+    # Save best-pair details alongside scores (enables rescoring)
+    details_path = part_path.parent / part_path.name.replace(".npy", "_details.json")
+    save_json(null_pair_details, details_path)
+
     part_meta = {
         "chunk_index": chunk_index,
         "chunk_count": chunk_count,
@@ -944,6 +969,14 @@ def _run_final(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # Assemble null pair details (if available)
+    null_pair_details: list[dict] = []
+    for p in part_paths:
+        details_file = p.parent / p.name.replace(".npy", "_details.json")
+        if details_file.exists():
+            null_pair_details.extend(load_json(details_file))
+    has_null_details = len(null_pair_details) > 0
+
     _print_section("Computing significance (Benjamini-Hochberg FDR)")
     pairs_scored = compute_significance(top_nonoverlap, null_scores, alpha=fdr_alpha)
     n_significant = (
@@ -968,10 +1001,17 @@ def _run_final(args: argparse.Namespace) -> int:
     else:
         pd.DataFrame(columns=[
             "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
-            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
-            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "separation_deg", "radius_a_m", "radius_b_m",
+            "radius_px_a", "radius_px_b",
+            "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b",
+            "orientation_a_deg", "orientation_b_deg",
+            "orientation_unc_a_deg", "orientation_unc_b_deg",
+            "ellipticity_unc_a", "ellipticity_unc_b",
+            "shape_reliable_a", "shape_reliable_b",
+            "score", "T_diametrality",
             "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
-            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "T_position", "chord_length_m", "expected_ellipticity",
             "p_value", "bh_significant",
         ]).to_csv(all_pairs_path, index=False)
     print(f"  Saved: {all_pairs_path}")
@@ -984,10 +1024,17 @@ def _run_final(args: argparse.Namespace) -> int:
         significant_pairs = pd.DataFrame()
         pd.DataFrame(columns=[
             "idx_a", "idx_b", "lon_a", "lat_a", "lon_b", "lat_b",
-            "separation_deg", "radius_a_m", "radius_b_m", "fi_a", "fi_b",
-            "ellipticity_a", "ellipticity_b", "score", "T_diametrality",
+            "separation_deg", "radius_a_m", "radius_b_m",
+            "radius_px_a", "radius_px_b",
+            "fi_a", "fi_b",
+            "ellipticity_a", "ellipticity_b",
+            "orientation_a_deg", "orientation_b_deg",
+            "orientation_unc_a_deg", "orientation_unc_b_deg",
+            "ellipticity_unc_a", "ellipticity_unc_b",
+            "shape_reliable_a", "shape_reliable_b",
+            "score", "T_diametrality",
             "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
-            "T_velocity", "chord_length_m", "expected_ellipticity",
+            "T_position", "chord_length_m", "expected_ellipticity",
             "p_value", "bh_significant",
         ]).to_csv(sig_pairs_path, index=False)
     print(f"  Saved: {sig_pairs_path}")
@@ -995,6 +1042,11 @@ def _run_final(args: argparse.Namespace) -> int:
     null_path = output_dir / "null_best_scores.npy"
     np.save(str(null_path), null_scores)
     print(f"  Saved: {null_path}")
+
+    if has_null_details:
+        null_details_path = output_dir / "null_pair_details.json"
+        save_json(null_pair_details, null_details_path)
+        print(f"  Saved: {null_details_path}")
 
     null_time_total = 0.0
     for idx in range(chunk_count):

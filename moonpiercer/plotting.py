@@ -5,6 +5,7 @@ All figures are generated with matplotlib and can be saved via
 
 Methodology figures:
 - Transit cone diagram (2D orthographic projection)
+- Chord space diagram (allowed vs forbidden search space)
 - Annotated detection chip
 
 Results figures:
@@ -23,6 +24,7 @@ import numpy as np
 if TYPE_CHECKING:
     import matplotlib.figure
     import pandas as pd
+    from moonpiercer.config import ChordConfig
 
 from moonpiercer.constants import LUNAR_RADIUS_M
 from moonpiercer.geometry import (
@@ -179,7 +181,260 @@ def _draw_transit_cone_panel(
 
 
 # ======================================================================
-# Methodology Figure B: Annotated Detection Chip
+# Methodology Figure B: Chord Search-Space Diagram
+# ======================================================================
+
+def plot_chord_space_diagram(
+    config: "ChordConfig",
+    entry_lon_deg: float = 30.0,
+    entry_lat_deg: float = 15.0,
+    orientation_deg: float = 45.0,
+    ellipticity: float = 1.5,
+    figsize: tuple[float, float] = (6, 6),
+) -> "matplotlib.figure.Figure":
+    """Methodology figure: allowed vs forbidden chord search space.
+
+    Shows the Moon as a 2-D orthographic disc centred on the entry
+    crater.  The **red** shaded region (forbidden zone) is excluded by
+    the minimum angular separation cut (``config.min_chord_sep_deg``).
+    The **blue** filled circles are the pair search cones around the two
+    shape-predicted exit positions (forward and backward along the crater
+    major axis, owing to the 180° orientation ambiguity).  Everything
+    outside the forbidden zone is the *allowed* chord space.
+
+    Parameters
+    ----------
+    config : ChordConfig
+        Pipeline configuration (uses ``min_chord_sep_deg`` and
+        ``search_cone_half_deg_reliable``).
+    entry_lon_deg, entry_lat_deg : float
+        Longitude and latitude of the example entry crater [degrees].
+    orientation_deg : float
+        Major-axis orientation of the entry crater [degrees from N].
+    ellipticity : float
+        Ellipticity of the entry crater (used to infer chord separation).
+    figsize : tuple
+        Figure size in inches.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle, Patch
+    import matplotlib.lines as mlines
+
+    # ---- Orthographic projection centred on the entry crater ----------
+    v_entry = lonlat_to_unit_vectors(
+        np.array([entry_lon_deg]), np.array([entry_lat_deg])
+    ).ravel()
+
+    z_hat = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(v_entry, z_hat)) > 0.999:
+        east = np.array([1.0, 0.0, 0.0])
+    else:
+        east = np.cross(z_hat, v_entry)
+        east /= np.linalg.norm(east)
+    north = np.cross(v_entry, east)
+    north /= np.linalg.norm(north)
+
+    def _ortho(v: np.ndarray):
+        """Return (x, y, visible) for a single unit vector."""
+        x = float(np.dot(v, east))
+        y = float(np.dot(v, north))
+        vis = bool(np.dot(v, v_entry) >= -1e-4)
+        return x, y, vis
+
+    def _cap_xy(v_centre: np.ndarray, half_angle_deg: float, n: int = 360):
+        """Orthographic (x, y) of a spherical cap boundary."""
+        r_rad = np.deg2rad(half_angle_deg)
+        bearings = np.linspace(0, 2 * np.pi, n, endpoint=True)
+        pts = np.stack(
+            [predict_exit_point(v_centre, float(b), r_rad) for b in bearings]
+        )
+        xs = pts @ east
+        ys = pts @ north
+        return xs, ys
+
+    def _arc_xy(v1: np.ndarray, v2: np.ndarray, n: int = 120):
+        """Orthographic (x, y, visible) arrays for a great-circle arc."""
+        arc_lons, arc_lats = slerp_arc(v1, v2, n_points=n)
+        vecs = lonlat_to_unit_vectors(
+            np.asarray(arc_lons), np.asarray(arc_lats)
+        )
+        xs = vecs @ east
+        ys = vecs @ north
+        vis = (vecs @ v_entry) >= -1e-4
+        return xs, ys, vis
+
+    # ---- Geometry for this example crater ----------------------------
+    sep_deg = float(separation_from_ellipticity(ellipticity))
+    sep_rad = np.deg2rad(sep_deg)
+    brg_fwd = np.deg2rad(90.0 - orientation_deg)
+    brg_bwd = brg_fwd + np.pi
+
+    v_exit_fwd = predict_exit_point(v_entry, brg_fwd, sep_rad)
+    v_exit_bwd = predict_exit_point(v_entry, brg_bwd, sep_rad)
+
+    ex_fwd, ey_fwd, vis_fwd = _ortho(v_exit_fwd)
+    ex_bwd, ey_bwd, vis_bwd = _ortho(v_exit_bwd)
+
+    cone_half = config.search_cone_half_deg_reliable
+
+    # ---- Statistics --------------------------------------------------
+    frac_forbidden = (1.0 - np.cos(np.deg2rad(config.min_chord_sep_deg))) / 2.0
+    frac_allowed = 1.0 - frac_forbidden
+    frac_cone = (1.0 - np.cos(np.deg2rad(cone_half))) / 2.0
+
+    # ---- Publication rcParams ----------------------------------------
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 9,
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+    })
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_aspect("equal")
+    ax.set_xlim(-1.18, 1.18)
+    ax.set_ylim(-1.18, 1.18)
+    ax.axis("off")
+
+    # ---- Moon disc (back hemisphere first — slightly darker) ----------
+    moon_back = Circle(
+        (0, 0), 1.0, facecolor="0.82", edgecolor="none", zorder=1,
+    )
+    ax.add_patch(moon_back)
+
+    # Allowed zone (front hemisphere, light cream)
+    moon_front = Circle(
+        (0, 0), 1.0, facecolor="#f5f0e8", edgecolor="none", zorder=2,
+    )
+    ax.add_patch(moon_front)
+
+    # ---- Forbidden zone (min separation cap) -------------------------
+    bx, by = _cap_xy(v_entry, config.min_chord_sep_deg)
+    ax.fill(bx, by, color="#f2b4b4", alpha=0.90, zorder=3)
+    ax.plot(bx, by, "-", color="#b03030", lw=0.9, zorder=4)
+
+    # ---- Great-circle chord paths ------------------------------------
+    for v_exit, ls, alpha in [
+        (v_exit_fwd, "-",  0.65),
+        (v_exit_bwd, "--", 0.45),
+    ]:
+        ax_xs, ax_ys, ax_vis = _arc_xy(v_entry, v_exit)
+        # Mask invisible segments by inserting NaN
+        ax_x_masked = np.where(ax_vis, ax_xs, np.nan)
+        ax_y_masked = np.where(ax_vis, ax_ys, np.nan)
+        ax.plot(
+            ax_x_masked, ax_y_masked,
+            ls, color="#3a6ab0", alpha=alpha, lw=1.0, zorder=5,
+        )
+
+    # ---- Moon disc edge (drawn after fill so it sits on top) ---------
+    moon_edge = Circle(
+        (0, 0), 1.0, fill=False, edgecolor="0.35", lw=1.2, zorder=8,
+    )
+    ax.add_patch(moon_edge)
+
+    # ---- Search cones around predicted exit points -------------------
+    cone_kwargs = [
+        dict(v=v_exit_fwd, ex=ex_fwd, ey=ey_fwd, vis=vis_fwd,
+             ls="-",  alpha_fill=0.55, label="forward"),
+        dict(v=v_exit_bwd, ex=ex_bwd, ey=ey_bwd, vis=vis_bwd,
+             ls="--", alpha_fill=0.35, label="backward"),
+    ]
+    for kw in cone_kwargs:
+        cx, cy = _cap_xy(kw["v"], cone_half)
+        ax.fill(cx, cy, color="#3a6ab0", alpha=kw["alpha_fill"], zorder=6)
+        ax.plot(cx, cy, kw["ls"], color="#1a3a80", lw=0.7, zorder=7)
+        if kw["vis"]:
+            ax.plot(
+                kw["ex"], kw["ey"],
+                "x", color="#1a3a80", ms=7, mew=1.8, zorder=9,
+            )
+        else:
+            # Behind the Moon — indicate with a dashed circle on the horizon
+            ax.plot(
+                kw["ex"], kw["ey"],
+                "x", color="#1a3a80", ms=7, mew=1.8, zorder=9,
+                alpha=0.35,
+            )
+
+    # ---- Entry crater marker -----------------------------------------
+    ax.plot(
+        0, 0,
+        "o", color="#b03030", ms=9, zorder=10,
+        markeredgecolor="white", markeredgewidth=1.2,
+    )
+
+    # ---- Zone labels -------------------------------------------------
+    # Forbidden zone label (inside the cap)
+    ax.text(
+        0.0, -0.22,
+        f"Forbidden\n({config.min_chord_sep_deg:.0f}° min sep)",
+        ha="center", va="center", fontsize=7.5,
+        color="#7a1010", zorder=11,
+    )
+    # Allowed zone label (top-right)
+    ax.text(
+        0.62, 0.72,
+        f"Allowed\n({100 * frac_allowed:.1f}% of sphere)",
+        ha="center", va="center", fontsize=7.5,
+        color="#2a5a2a", zorder=11,
+    )
+
+    # ---- Annotate the search cone ------------------------------------
+    if vis_fwd:
+        ax.annotate(
+            f"Search cone\n({cone_half:.0f}° half-angle,\n"
+            f"{100 * frac_cone:.3f}% of sphere)",
+            xy=(ex_fwd, ey_fwd),
+            xytext=(ex_fwd + 0.35, ey_fwd + 0.25),
+            fontsize=7.5, color="#1a3a80",
+            arrowprops=dict(arrowstyle="->", color="#1a3a80", lw=0.8),
+            zorder=12,
+        )
+
+    # ---- Title -------------------------------------------------------
+    ax.set_title(
+        rf"Chord search space  "
+        rf"($e = {ellipticity:.2f}$,  "
+        rf"$\theta_{{\rm sep}} = {sep_deg:.0f}^\circ$)",
+        fontsize=10, pad=8,
+    )
+
+    # ---- Legend ------------------------------------------------------
+    legend_elements = [
+        Patch(facecolor="#f2b4b4", edgecolor="#b03030", lw=0.8,
+              label=f"Forbidden (sep < {config.min_chord_sep_deg:.0f}°, "
+                    f"{100 * frac_forbidden:.1f}%)"),
+        Patch(facecolor="#f5f0e8", edgecolor="0.5", lw=0.6,
+              label=f"Allowed ({100 * frac_allowed:.1f}% of sphere)"),
+        Patch(facecolor="#3a6ab0", alpha=0.55,
+              label=f"Search cone ×2 ({cone_half:.0f}° half-angle)"),
+        mlines.Line2D(
+            [], [], marker="o", color="w",
+            markerfacecolor="#b03030", markeredgecolor="white",
+            markeredgewidth=1.0, ms=7, label="Entry crater",
+        ),
+    ]
+    ax.legend(
+        handles=legend_elements,
+        loc="lower left",
+        fontsize=7,
+        framealpha=0.92,
+        edgecolor="0.6",
+        handlelength=1.4,
+    )
+
+    fig.tight_layout()
+    return fig
+
+
+# ======================================================================
+# Methodology Figure C: Annotated Detection Chip
 # ======================================================================
 
 def plot_annotated_chip(
@@ -415,11 +670,11 @@ def plot_score_component_star(
 
     component_cols = [
         "T_diametrality", "T_radius", "T_freshness",
-        "T_ellipticity", "T_orientation", "T_velocity",
+        "T_ellipticity", "T_orientation", "T_position",
     ]
     labels = [
         r"$T_{\rm diam}$", r"$T_{\rm radius}$", r"$T_{\rm fresh}$",
-        r"$T_{\rm ellip}$", r"$T_{\rm orient}$", r"$T_{\rm vel}$",
+        r"$T_{\rm ellip}$", r"$T_{\rm orient}$", r"$T_{\rm pos}$",
     ]
 
     top = pairs.head(n_top)
