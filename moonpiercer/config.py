@@ -92,13 +92,14 @@ class ChordConfig:
     # ------------------------------------------------------------------
     # Position prediction scoring
     # ------------------------------------------------------------------
-    sigma_position_deg: float = 1.0
+    sigma_position_deg: float = 0.5
     """Fallback Gaussian width [degrees] for T_position when per-crater
     shape uncertainties are unavailable (e.g. rescoring old data).
 
     Used as ``T_position = exp(-(offset / sigma)²)``.  Tighter values
     penalise pairs whose shape-predicted exit is far from the actual
-    partner position."""
+    partner position.  Per-crater propagated uncertainties take
+    precedence when available."""
 
     # ------------------------------------------------------------------
     # Freshness index
@@ -125,11 +126,12 @@ class ChordConfig:
     max_freshness_diff: float = 0.30
     """Hard cut: maximum |ΔFI| between paired craters."""
 
-    sigma_freshness: float = 0.05
+    sigma_freshness: float = 0.01
     """Gaussian width for the freshness-match scoring term.
 
     Freshness Index is continuous and well-resolved, so a tight sigma
-    (strong penalty for mismatches) is appropriate."""
+    (strong penalty for mismatches) is appropriate.  Set to 0.01 so that
+    pairs must match in age to within ~1 FI unit to score well."""
 
     # ------------------------------------------------------------------
     # Chord pairing
@@ -168,22 +170,29 @@ class ChordConfig:
 
     When shape is unreliable, we search a wider cone near the antipode."""
 
-    sigma_ellipticity: float = 0.08
+    sigma_ellipticity: float = 0.04
     """Gaussian width for the ellipticity-match scoring term.
 
     Ellipticity encodes the chord incidence angle — a strong physical
-    signal.  Tight penalty rewards pairs whose measured shapes match
-    the geometric prediction from their angular separation."""
+    signal.  Set to 0.04, roughly half the typical measurement noise
+    floor for shape-reliable craters, for strong discrimination."""
 
-    sigma_orientation_deg: float = 8.0
+    sigma_orientation_deg: float = 3.0
     """Gaussian width for the orientation-match scoring term [degrees].
 
     Both craters' major axes should align with the great circle
-    connecting them.  Tighter than the previous 15 deg to better
-    discriminate aligned pairs from coincidental matches."""
+    connecting them.  Set to 3° — tight but within the measurement
+    noise for shape-reliable craters (radius ≥ 5 px)."""
 
-    prefer_diametrality: bool = True
-    """If True, the scoring function includes T_diametrality = sin(sep/2)^n."""
+    prefer_diametrality: bool = False
+    """If True, the scoring function includes T_diametrality = sin(sep/2)^n.
+
+    Default False: for an isotropic PBH flux, off-centre trajectories
+    vastly outnumber diametral ones, so preferring diametrality would
+    bias against the most likely chord geometries.  The hard minimum
+    separation cut (min_chord_sep_deg) already excludes trivially short
+    chords; highly eccentric craters from short chords are penalised by
+    T_ellipticity."""
 
     diametrality_exponent: float = 2.0
     """Exponent for the diametrality term: sin(sep/2)^n.
