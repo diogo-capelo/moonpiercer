@@ -283,7 +283,7 @@ def _estimate_coverage_km2(
     default_span_m = ChordConfig().chip_span_m
     total_m2 = 0.0
     for meta in chip_metadata:
-        span_m = float(meta.get("chip_span_m", default_span_m))
+        span_m = float(meta.get("chip_span_m") or default_span_m)
         total_m2 += span_m * span_m
     return total_m2 / 1.0e6  # m² → km²
 
