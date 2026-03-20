@@ -1,0 +1,7 @@
+I have placed the plot results in the folder plots/pdf. The results for the top 50 pairs show a massive clustering at a score value of essentially 1, so much so that differences in pair scoring don't show up in the first few decimal places. 
+
+This tells me that we can be a lot more aggressive with our scoring: both placing more stringent cuts (especially when it comes to the position of the craters/difference from where the expected entry-exit would be) and making the score penalize differences much more aggressively. At the same time, freshness is heavily skewed towards lower values. Keep in mind freshness only matters to us as a relative, not absolute measure: we are looking for craters formed at the same time, it doesn't matter when that time was. 
+
+The overall crater size distribution also seems a little off. All craters seem to fall into only 5 bins, which is entirely and absolutely unexpected; I'd expect a continuous, but not uniform, distribution of crater sizes in the considered range of 1 to 10m, and the smallest radius crater detected is 4m. Why is this, is it due to resolution in the chips?
+
+I would like to be able to do this WITHOUT having to re-run the full pipeline, which carries a heavy computational and time cost. Is it possible to extend the analysis of scored pairs to more pairs? What about the null trials, do these have to be run again or can we determine the new score from the old one or from existing data?
