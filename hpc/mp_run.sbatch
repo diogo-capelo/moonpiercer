@@ -54,8 +54,8 @@ export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-MAX_CHIPS="${MOONPIERCER_MAX_CHIPS:-15000}"
-GRID_STEP="${MOONPIERCER_GRID_STEP:-1.5}"
+MAX_CHIPS="${MOONPIERCER_MAX_CHIPS:-30000}"
+GRID_STEP="${MOONPIERCER_GRID_STEP:-1.0}"
 MAX_WORKERS="${MOONPIERCER_MAX_WORKERS:-8}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
 ARRAY_SIZE="${MOONPIERCER_ARRAY_SIZE:-999}"
@@ -122,7 +122,7 @@ MANIFEST_JOB_ID=$(sbatch \
     --job-name=mp_run_manifest \
     --output="${STAGE_LOG_DIR}/manifest_%j.out" \
     --error="${STAGE_LOG_DIR}/manifest_%j.err" \
-    --time=24:00:00 \
+    --time=72:00:00 \
     --mem=8G \
     --cpus-per-task="$MAX_WORKERS" \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/manifest.py" \

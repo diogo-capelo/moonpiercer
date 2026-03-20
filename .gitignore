@@ -11,3 +11,7 @@ cache/
 
 # HPC results
 results/
+
+# Plots
+plots/
+*.png
