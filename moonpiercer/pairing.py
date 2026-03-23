@@ -396,9 +396,6 @@ def build_chord_pairs(
     lats = craters["lat_deg"].to_numpy(dtype=np.float64)
     vectors = lonlat_to_unit_vectors(lons, lats)
 
-    # Build kd-tree over unit vectors
-    tree = cKDTree(vectors)
-
     # Extract columns
     radii = craters["radius_m"].to_numpy(dtype=np.float64)
     fi = craters["freshness_index"].to_numpy(dtype=np.float64)
@@ -416,12 +413,35 @@ def build_chord_pairs(
     has_radius_px = "radius_px" in craters.columns
     radius_px = craters["radius_px"].to_numpy(dtype=np.float64) if has_radius_px else np.full(n, np.nan)
 
-    # Hard cut pre-filtering
+    # Hard cut pre-filtering: only qualifying craters enter the kd-tree.
+    # This is the key optimisation for large catalogues — a 10° search
+    # cone on 1 M craters returns ~7 700 candidates, but 95 %+ fail the
+    # freshness/depth check.  Pre-filtering shrinks the tree and ensures
+    # every kd-tree hit is already a valid candidate.
     min_fi = config.min_freshness
     min_depth = config.min_depth_proxy
     depth_proxy = craters["depth_proxy"].to_numpy(dtype=np.float64) if "depth_proxy" in craters.columns else np.ones(n)
 
-    # For each crater, predict the exit point and search
+    qual_mask = (fi >= min_fi) & (depth_proxy >= min_depth)
+    qual_idx = np.where(qual_mask)[0]
+    n_qual = len(qual_idx)
+
+    if n_qual < 2:
+        return pd.DataFrame()
+
+    # Build kd-tree over qualifying craters only
+    qual_vectors = vectors[qual_idx]
+    tree = cKDTree(qual_vectors)
+    # Reverse mapping: kd-tree index → original catalogue index
+    # (qual_idx[k] gives the original index for kd-tree entry k)
+
+    print(
+        f"[pairing] Pre-filter: {n_qual:,d} of {n:,d} craters qualify "
+        f"({n_qual / n:.1%})",
+        file=sys.stderr, flush=True,
+    )
+
+    # For each qualifying crater, predict the exit point and search
     pairs_list: list[dict] = []
     seen_pairs: set[tuple[int, int]] = set()
 
@@ -431,10 +451,8 @@ def build_chord_pairs(
     t_start = time.monotonic()
     next_report = t_start + progress_interval_sec if use_progress else None
 
-    for i in range(n):
-        # Skip craters that don't meet freshness/depth threshold
-        if fi[i] < min_fi or depth_proxy[i] < min_depth:
-            continue
+    for qi in range(n_qual):
+        i = int(qual_idx[qi])
 
         v_i = vectors[i]
 
@@ -463,20 +481,19 @@ def build_chord_pairs(
         euclidean_radius = 2.0 * np.sin(cone_rad / 2.0)
 
         for v_center in search_centers:
-            # Query kd-tree
-            candidates = tree.query_ball_point(v_center, euclidean_radius)
+            # Query kd-tree (returns indices into qual_vectors)
+            cand_qi_list = tree.query_ball_point(v_center, euclidean_radius)
 
-            for j in candidates:
+            for cand_qi in cand_qi_list:
+                j = int(qual_idx[cand_qi])
                 if j <= i:  # avoid self-pair and duplicates (i < j)
                     continue
                 pair_key = (i, j)
                 if pair_key in seen_pairs:
                     continue
 
-                # Hard cuts
-                # 1. Freshness
-                if fi[j] < min_fi or depth_proxy[j] < min_depth:
-                    continue
+                # Hard cuts (freshness/depth already guaranteed by pre-filter)
+                # 1. Freshness difference
                 if abs(fi[i] - fi[j]) > config.max_freshness_diff:
                     continue
 
@@ -540,12 +557,12 @@ def build_chord_pairs(
                 })
 
         if next_report is not None and time.monotonic() >= next_report:
-            done = i + 1
+            done = qi + 1
             elapsed = time.monotonic() - t_start
             rate = done / elapsed if elapsed > 0 else 0.0
             print(
-                f"[pairing] {done}/{n} craters ({done / n:.1%}) "
-                f"elapsed={elapsed:.1f}s rate={rate:.2f}/s",
+                f"[pairing] {done}/{n_qual} qualifying craters ({done / n_qual:.1%}) "
+                f"elapsed={elapsed:.1f}s rate={rate:.2f}/s pairs_found={len(pairs_list):,d}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -585,12 +602,13 @@ def max_pair_score(
 
     n = len(craters)
     if n < 2:
+        if return_details:
+            return 0.0, {}
         return 0.0
 
     lons = craters["lon_deg"].to_numpy(dtype=np.float64)
     lats = craters["lat_deg"].to_numpy(dtype=np.float64)
     vectors = lonlat_to_unit_vectors(lons, lats)
-    tree = cKDTree(vectors)
 
     radii = craters["radius_m"].to_numpy(dtype=np.float64)
     fi = craters["freshness_index"].to_numpy(dtype=np.float64)
@@ -611,12 +629,24 @@ def max_pair_score(
         else np.ones(n)
     )
 
+    # Pre-filter: kd-tree from qualifying craters only (same as build_chord_pairs)
+    qual_mask = (fi >= min_fi) & (depth_proxy >= min_depth)
+    qual_idx = np.where(qual_mask)[0]
+    n_qual = len(qual_idx)
+
+    if n_qual < 2:
+        if return_details:
+            return 0.0, {}
+        return 0.0
+
+    qual_vectors = vectors[qual_idx]
+    tree = cKDTree(qual_vectors)
+
     best = 0.0
     best_details: dict = {}
 
-    for i in range(n):
-        if fi[i] < min_fi or depth_proxy[i] < min_depth:
-            continue
+    for qi in range(n_qual):
+        i = int(qual_idx[qi])
 
         v_i = vectors[i]
         v_pred, pred_sep_rad = _predict_search_center(
@@ -639,14 +669,13 @@ def max_pair_score(
         euclidean_radius = 2.0 * np.sin(cone_rad / 2.0)
 
         for v_center in search_centers:
-            candidates = tree.query_ball_point(v_center, euclidean_radius)
+            cand_qi_list = tree.query_ball_point(v_center, euclidean_radius)
 
-            for j in candidates:
+            for cand_qi in cand_qi_list:
+                j = int(qual_idx[cand_qi])
                 if j <= i:
                     continue
 
-                if fi[j] < min_fi or depth_proxy[j] < min_depth:
-                    continue
                 if abs(fi[i] - fi[j]) > config.max_freshness_diff:
                     continue
                 if abs(radii[i] - radii[j]) > config.max_radius_diff_m:

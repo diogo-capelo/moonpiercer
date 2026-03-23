@@ -193,7 +193,7 @@ PREP_JOB_ID=$(sbatch \
     --job-name=mp_run_prep \
     --output="${STAGE_LOG_DIR}/global_prep_%j.out" \
     --error="${STAGE_LOG_DIR}/global_prep_%j.err" \
-    --time=24:00:00 \
+    --time=48:00:00 \
     --mem=32G \
     --cpus-per-task=8 \
     "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \
@@ -204,7 +204,7 @@ PREP_JOB_ID=$(sbatch \
         --random-trials "${RANDOM_TRIALS}" \
         --random-seed 42 \
         --fdr-alpha 0.05 \
-        --top-pairs 50 \
+        --top-pairs 200 \
         --null-chunk-count "${NULL_CHUNK_COUNT}" \
         --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
         ${RESUME_FLAG}
@@ -238,7 +238,7 @@ NULL_JOB_ID=$(sbatch \
         --random-trials "${RANDOM_TRIALS}" \
         --random-seed 42 \
         --fdr-alpha 0.05 \
-        --top-pairs 50 \
+        --top-pairs 200 \
         --null-chunk-count "${NULL_CHUNK_COUNT}" \
         --progress-interval-sec "${PROGRESS_INTERVAL_SEC}" \
         ${RESUME_FLAG}
@@ -269,7 +269,7 @@ FINAL_JOB_ID=$(sbatch \
         --random-trials "${RANDOM_TRIALS}" \
         --random-seed 42 \
         --fdr-alpha 0.05 \
-        --top-pairs 50 \
+        --top-pairs 200 \
         --null-chunk-count "${NULL_CHUNK_COUNT}" \
         --save-pair-images \
         ${RESUME_FLAG}

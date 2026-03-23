@@ -103,7 +103,7 @@ PROGRESS_INTERVAL_SEC="${MOONPIERCER_PROGRESS_INTERVAL_SEC:-300}"
 RANDOM_TRIALS="${MOONPIERCER_RANDOM_TRIALS:-2000}"
 RANDOM_SEED="${MOONPIERCER_RANDOM_SEED:-42}"
 FDR_ALPHA="${MOONPIERCER_FDR_ALPHA:-0.05}"
-TOP_PAIRS="${MOONPIERCER_TOP_PAIRS:-50}"
+TOP_PAIRS="${MOONPIERCER_TOP_PAIRS:-200}"
 
 RESUME_FLAG="--resume"
 if [ "${MOONPIERCER_RESUME:-1}" -eq 0 ]; then
@@ -397,7 +397,7 @@ if [ "$PREP_DONE" -eq 0 ]; then
         --job-name=mp_resume_prep \
         --output="${STAGE_LOG_DIR}/global_prep_%j.out" \
         --error="${STAGE_LOG_DIR}/global_prep_%j.err" \
-        --time=24:00:00 \
+        --time=48:00:00 \
         --mem=32G \
         --cpus-per-task=8 \
         "${HPC_DIR}/setup_env.sh" python3 "${HPC_DIR}/global_aggregation.py" \

@@ -131,7 +131,7 @@ class TestScorePair:
         """60° separation → T_diametrality = sin(30°)^n with n=diametrality_exponent."""
         v_a = lonlat_to_unit_vectors(np.array([0.0]), np.array([0.0])).ravel()
         v_b = lonlat_to_unit_vectors(np.array([60.0]), np.array([0.0])).ravel()
-        config = ChordConfig()
+        config = ChordConfig(prefer_diametrality=True)
         result = score_pair(
             sep_deg=60.0,
             radius_a_m=4.0, radius_b_m=4.0,
@@ -144,6 +144,23 @@ class TestScorePair:
         )
         expected = np.sin(np.deg2rad(30.0)) ** config.diametrality_exponent
         assert result["T_diametrality"] == pytest.approx(expected)
+
+    def test_diametrality_disabled_by_default(self):
+        """Default config has prefer_diametrality=False → T_diam = 1.0."""
+        v_a = lonlat_to_unit_vectors(np.array([0.0]), np.array([0.0])).ravel()
+        v_b = lonlat_to_unit_vectors(np.array([60.0]), np.array([0.0])).ravel()
+        config = ChordConfig()
+        result = score_pair(
+            sep_deg=60.0,
+            radius_a_m=4.0, radius_b_m=4.0,
+            fi_a=0.6, fi_b=0.6,
+            ellipticity_a=2.0, ellipticity_b=2.0,
+            orientation_a_deg=0.0, orientation_b_deg=0.0,
+            shape_reliable_a=False, shape_reliable_b=False,
+            v_a=v_a, v_b=v_b,
+            config=config,
+        )
+        assert result["T_diametrality"] == 1.0
 
 
 # ======================================================================

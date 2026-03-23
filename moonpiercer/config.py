@@ -120,8 +120,12 @@ class ChordConfig:
     freshness_rcr_scale: float = 8.0
     """Scaling constant for RCR → [0, 1] mapping."""
 
-    min_freshness: float = 0.15
-    """Minimum Freshness Index for a crater to participate in pairing."""
+    min_freshness: float = 0.05
+    """Minimum Freshness Index for a crater to participate in pairing.
+
+    Set just above the noise floor — crater quality is ensured by
+    min_depth_proxy and min_circularity.  Freshness is used as a
+    correlation metric (sigma_freshness), not an absolute age gate."""
 
     max_freshness_diff: float = 0.30
     """Hard cut: maximum |ΔFI| between paired craters."""
