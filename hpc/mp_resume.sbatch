@@ -2,7 +2,7 @@
 #SBATCH --job-name=mp_resume
 #SBATCH --output=results/slurm_logs/mp_resume_%j.out
 #SBATCH --error=results/slurm_logs/mp_resume_%j.err
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --mem=2G
 #SBATCH --cpus-per-task=2
 
@@ -163,14 +163,46 @@ FINAL_SUMMARY="${GLOBAL_OUTPUT_DIR}/global_summary.json"
 MISSING_CHIPS_FILE="${RESULTS_DIR}/missing_chips.txt"
 MISSING_NULL_FILE="${RESULTS_DIR}/missing_null_chunks.txt"
 
-> "$MISSING_CHIPS_FILE"
-for ((i=0; i<TOTAL_CHIPS; i++)); do
-    printf -v chip_dir "%s/chip_%04d" "$CHIP_RESULTS_DIR" "$i"
-    if [ ! -f "${chip_dir}/craters.csv" ]; then
-        echo "$i" >> "$MISSING_CHIPS_FILE"
-    fi
-done
-MISSING_CHIPS_COUNT=$(wc -l < "$MISSING_CHIPS_FILE" | tr -d ' ')
+# Single Python pass: find missing chips + collect health stats in one go.
+# Avoids spawning one interpreter per chip (would be 30k+ forks at scale).
+eval "$("${PYTHON_BIN}" - "${CHIP_RESULTS_DIR}" "${TOTAL_CHIPS}" "${MISSING_CHIPS_FILE}" <<'PYEOF'
+import json, os, sys
+
+chip_results_dir, total_chips, missing_chips_file = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+chips_ok = chips_empty = chips_error = missing_count = 0
+EMPTY_STATUSES = frozenset({
+    "ok", "no_data", "blank_chip", "noise_floor",
+    "invalid_bbox", "chip_download_failed",
+})
+
+with open(missing_chips_file, "w") as mf:
+    for i in range(total_chips):
+        chip_dir = os.path.join(chip_results_dir, f"chip_{i:04d}")
+        if not os.path.exists(os.path.join(chip_dir, "craters.csv")):
+            mf.write(f"{i}\n")
+            missing_count += 1
+        meta_path = os.path.join(chip_dir, "metadata.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path) as f:
+                    m = json.load(f)
+                s = m.get("status", "unknown")
+                n = int(m.get("n_craters") or 0)
+                if s == "ok" and n > 0:
+                    chips_ok += 1
+                elif s in EMPTY_STATUSES:
+                    chips_empty += 1
+                else:
+                    chips_error += 1
+            except Exception:
+                chips_error += 1
+
+print(f"MISSING_CHIPS_COUNT={missing_count}")
+print(f"CHIPS_OK={chips_ok}")
+print(f"CHIPS_EMPTY={chips_empty}")
+print(f"CHIPS_ERROR_COUNT={chips_error}")
+PYEOF
+)"
 
 CHIPS_COMPLETE=1
 if [ "$MISSING_CHIPS_COUNT" -gt 0 ]; then
@@ -225,33 +257,7 @@ fi
 
 # ─── Previous-run diagnostics ──────────────────────────────────────────────
 
-CHIPS_OK=0
-CHIPS_EMPTY=0
-CHIPS_ERROR_COUNT=0
-if [ -d "$CHIP_RESULTS_DIR" ]; then
-    for ((i=0; i<TOTAL_CHIPS; i++)); do
-        printf -v chip_dir "%s/chip_%04d" "$CHIP_RESULTS_DIR" "$i"
-        meta_file="${chip_dir}/metadata.json"
-        if [ -f "$meta_file" ]; then
-            chip_status=$("${PYTHON_BIN}" -c "
-import json, sys
-try:
-    m = json.load(open(sys.argv[1]))
-    print(m.get('status','unknown'), m.get('n_craters',0))
-except: print('unreadable 0')
-" "$meta_file" 2>/dev/null || echo "unreadable 0")
-            read -r cs cn <<< "$chip_status"
-            if [ "$cs" = "ok" ] && [ "$cn" -gt 0 ] 2>/dev/null; then
-                CHIPS_OK=$((CHIPS_OK + 1))
-            elif [ "$cs" = "ok" ] || [ "$cs" = "no_data" ] || [ "$cs" = "blank_chip" ] || \
-                 [ "$cs" = "noise_floor" ] || [ "$cs" = "invalid_bbox" ] || [ "$cs" = "chip_download_failed" ]; then
-                CHIPS_EMPTY=$((CHIPS_EMPTY + 1))
-            else
-                CHIPS_ERROR_COUNT=$((CHIPS_ERROR_COUNT + 1))
-            fi
-        fi
-    done
-fi
+# CHIPS_OK / CHIPS_EMPTY / CHIPS_ERROR_COUNT set by the Python pass above.
 
 # ─── Banner ─────────────────────────────────────────────────────────────────
 
