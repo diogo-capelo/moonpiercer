@@ -210,6 +210,15 @@ class ChordConfig:
     top_pairs_to_report: int = 200
     """Number of top non-overlapping pairs to report."""
 
+    max_pairs_in_memory: int = 500_000
+    """Maximum number of crater pairs held in memory during pairing.
+
+    A bounded min-heap of this size replaces an unbounded list, keeping
+    memory usage constant regardless of how many pairs pass the hard cuts.
+    Only pairs with a score above the current heap minimum are retained;
+    lower-scoring pairs are discarded immediately.  Set large enough that
+    the true top-N pairs are never evicted (500k >> top_pairs_to_report)."""
+
     # ------------------------------------------------------------------
     # Velocity constraints
     # ------------------------------------------------------------------

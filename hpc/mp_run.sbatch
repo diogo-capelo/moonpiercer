@@ -5,6 +5,8 @@
 #SBATCH --time=01:00:00
 #SBATCH --mem=4G
 #SBATCH --cpus-per-task=4
+#SBATCH --mail-type=FAIL,END
+#SBATCH --mail-user=diogo.capelo@tecnico.ulisboa.pt
 
 ###############################################################################
 # MOONPIERCER — Full-Coverage Chord PBH Lunar Crater Search Pipeline
@@ -187,6 +189,8 @@ echo ""
 
 PREP_JOB_ID=$(sbatch \
     --parsable \
+    --mail-type=FAIL,END \
+    --mail-user=diogo.capelo@tecnico.ulisboa.pt \
     --export=ALL \
     --dependency=afterok:${CHIP_JOB_ID} \
     --kill-on-invalid-dep=yes \
@@ -252,6 +256,8 @@ echo ""
 
 FINAL_JOB_ID=$(sbatch \
     --parsable \
+    --mail-type=FAIL,END \
+    --mail-user=diogo.capelo@tecnico.ulisboa.pt \
     --export=ALL \
     --dependency=afterok:${NULL_JOB_ID} \
     --kill-on-invalid-dep=yes \

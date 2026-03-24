@@ -5,6 +5,8 @@
 #SBATCH --time=02:00:00
 #SBATCH --mem=2G
 #SBATCH --cpus-per-task=2
+#SBATCH --mail-type=FAIL,END
+#SBATCH --mail-user=diogo.capelo@tecnico.ulisboa.pt
 
 ###############################################################################
 # MOONPIERCER — Resume pipeline from an existing results directory
@@ -398,6 +400,8 @@ if [ "$PREP_DONE" -eq 0 ]; then
 
     PREP_JOB_ID=$(sbatch \
         --parsable \
+        --mail-type=FAIL,END \
+        --mail-user=diogo.capelo@tecnico.ulisboa.pt \
         --export=ALL \
         "${DEP_OPTS[@]}" \
         --job-name=mp_resume_prep \
@@ -548,6 +552,8 @@ if [ "$FINAL_DONE" -eq 0 ]; then
 
     FINAL_JOB_ID=$(sbatch \
         --parsable \
+        --mail-type=FAIL,END \
+        --mail-user=diogo.capelo@tecnico.ulisboa.pt \
         --export=ALL \
         "${DEP_OPTS[@]}" \
         --job-name=mp_resume_final \

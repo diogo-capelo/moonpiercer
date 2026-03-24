@@ -12,6 +12,7 @@ The pairing engine uses a **shape-directed chord search** strategy:
 
 from __future__ import annotations
 
+import heapq
 import sys
 import time
 
@@ -441,9 +442,15 @@ def build_chord_pairs(
         file=sys.stderr, flush=True,
     )
 
-    # For each qualifying crater, predict the exit point and search
-    pairs_list: list[dict] = []
-    seen_pairs: set[tuple[int, int]] = set()
+    # Bounded min-heap: keeps only the top max_pairs_in_memory pairs by score.
+    # This replaces an unbounded list (which OOM-kills at ~400M+ pairs).
+    # The global seen_pairs set is replaced by a per-crater local set that
+    # only deduplicates hits from the forward/backward search of the SAME
+    # crater — the `j > i` guard already prevents cross-crater duplicates.
+    _max_pairs = config.max_pairs_in_memory
+    pairs_heap: list[tuple[float, int, dict]] = []  # min-heap (score, ctr, row)
+    _heap_ctr = 0
+    _total_candidates = 0  # pairs that passed all hard cuts (for progress log)
 
     min_chord_sep_rad = np.deg2rad(config.min_chord_sep_deg)
 
@@ -476,37 +483,33 @@ def build_chord_pairs(
             search_centers = [v_pred]
 
         # Convert angular cone to Euclidean distance for kd-tree
-        # For small angles: d_euclidean ≈ 2*sin(theta/2) ≈ theta (radians)
         cone_rad = np.deg2rad(cone_deg)
         euclidean_radius = 2.0 * np.sin(cone_rad / 2.0)
 
+        # Local deduplication: prevents the same j being added twice when
+        # both forward and backward search centres find it.  Much cheaper
+        # than a global set (cleared every outer iteration).
+        seen_j: set[int] = set()
+
         for v_center in search_centers:
-            # Query kd-tree (returns indices into qual_vectors)
             cand_qi_list = tree.query_ball_point(v_center, euclidean_radius)
 
             for cand_qi in cand_qi_list:
                 j = int(qual_idx[cand_qi])
-                if j <= i:  # avoid self-pair and duplicates (i < j)
+                if j <= i:  # self-pair and cross-crater duplicates (i always < j)
                     continue
-                pair_key = (i, j)
-                if pair_key in seen_pairs:
+                if j in seen_j:  # duplicate from forward/backward cone of same i
                     continue
 
-                # Hard cuts (freshness/depth already guaranteed by pre-filter)
-                # 1. Freshness difference
+                # Hard cuts
                 if abs(fi[i] - fi[j]) > config.max_freshness_diff:
                     continue
-
-                # 2. Radius match
                 if abs(radii[i] - radii[j]) > config.max_radius_diff_m:
                     continue
-
-                # 3. Minimum angular separation
                 sep = angular_separation_deg(v_i, vectors[j])
                 if sep < config.min_chord_sep_deg:
                     continue
 
-                # Score the pair
                 result = score_pair(
                     sep_deg=sep,
                     radius_a_m=float(radii[i]),
@@ -528,8 +531,10 @@ def build_chord_pairs(
                     ellipticity_unc_b=float(ellip_unc[j]),
                 )
 
-                seen_pairs.add(pair_key)
-                pairs_list.append({
+                seen_j.add(j)
+                _total_candidates += 1
+
+                pair_row = {
                     "idx_a": i,
                     "idx_b": j,
                     "lon_a": float(lons[i]),
@@ -554,24 +559,36 @@ def build_chord_pairs(
                     "shape_reliable_a": bool(reliable[i]),
                     "shape_reliable_b": bool(reliable[j]),
                     **result,
-                })
+                }
+
+                # Bounded min-heap: only keep the top _max_pairs by score
+                s = result["score"]
+                if len(pairs_heap) < _max_pairs:
+                    heapq.heappush(pairs_heap, (s, _heap_ctr, pair_row))
+                elif s > pairs_heap[0][0]:
+                    heapq.heapreplace(pairs_heap, (s, _heap_ctr, pair_row))
+                _heap_ctr += 1
 
         if next_report is not None and time.monotonic() >= next_report:
             done = qi + 1
             elapsed = time.monotonic() - t_start
             rate = done / elapsed if elapsed > 0 else 0.0
+            heap_min = pairs_heap[0][0] if pairs_heap else 0.0
             print(
                 f"[pairing] {done}/{n_qual} qualifying craters ({done / n_qual:.1%}) "
-                f"elapsed={elapsed:.1f}s rate={rate:.2f}/s pairs_found={len(pairs_list):,d}",
+                f"elapsed={elapsed:.1f}s rate={rate:.2f}/s "
+                f"pairs_found={_total_candidates:,d} "
+                f"heap={len(pairs_heap):,d}/{_max_pairs:,d} "
+                f"heap_min={heap_min:.6f}",
                 file=sys.stderr,
                 flush=True,
             )
             next_report = time.monotonic() + progress_interval_sec
 
-    if not pairs_list:
+    if not pairs_heap:
         return pd.DataFrame()
 
-    pairs = pd.DataFrame(pairs_list)
+    pairs = pd.DataFrame([item[2] for item in pairs_heap])
     pairs = pairs.sort_values("score", ascending=False).reset_index(drop=True)
     return pairs
 
