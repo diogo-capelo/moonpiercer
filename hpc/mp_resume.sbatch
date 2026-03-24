@@ -449,7 +449,7 @@ if [ "$NULL_DONE" -eq 0 ]; then
             --job-name=mp_resume_null \
             --output="${NULL_LOG_DIR}/null_%A_%a.out" \
             --error="${NULL_LOG_DIR}/null_%A_%a.err" \
-            --time=04:00:00 \
+            --time=24:00:00 \
             --mem=4G \
             --cpus-per-task=1 \
             --array="0-${NULL_ARRAY_END}" \
@@ -523,7 +523,7 @@ EOF
                 --job-name=mp_resume_null \
                 --output="${NULL_LOG_DIR}/null_%A_%a.out" \
                 --error="${NULL_LOG_DIR}/null_%A_%a.err" \
-                --time=04:00:00 \
+                --time=24:00:00 \
                 --mem=4G \
                 --cpus-per-task=1 \
                 --array="0-${NULL_ARRAY_END}" \
