@@ -385,6 +385,16 @@ def _null_part_meta_path(checkpoint_dir: Path, chunk_index: int) -> Path:
     return checkpoint_dir / f"null_scores_part_{chunk_index:05d}.json"
 
 
+def _null_trial_score_path(checkpoint_dir: Path, trial_index: int) -> Path:
+    """Per-trial checkpoint: single float score."""
+    return checkpoint_dir / f"null_trial_{trial_index:05d}.npy"
+
+
+def _null_trial_details_path(checkpoint_dir: Path, trial_index: int) -> Path:
+    """Per-trial checkpoint: best-pair details JSON."""
+    return checkpoint_dir / f"null_trial_{trial_index:05d}_details.json"
+
+
 def _load_checkpoint_meta(checkpoint_dir: Path) -> dict:
     meta_path = _checkpoint_meta_path(checkpoint_dir)
     if not meta_path.exists():
@@ -828,7 +838,16 @@ def _run_prep(args: argparse.Namespace) -> int:
 
 
 def _run_null(args: argparse.Namespace) -> int:
-    """Run one null-model chunk and write a partial result."""
+    """Run one null-model chunk with per-trial checkpointing.
+
+    Each trial is saved individually as soon as it completes, so that if
+    the job is killed (timeout, OOM, preemption) the completed trials are
+    preserved.  On restart the chunk skips already-checkpointed trials.
+
+    At the end, a legacy chunk file (``null_scores_part_XXXXX.npy``) is
+    written so that ``_run_final`` and the resume sbatch can detect chunk
+    completion without scanning individual trial files.
+    """
     t_start = time.monotonic()
     output_dir: Path = args.output_dir.resolve()
     checkpoint_dir = _resolve_checkpoint_dir(output_dir, args.checkpoint_dir)
@@ -861,38 +880,112 @@ def _run_null(args: argparse.Namespace) -> int:
         print(f"Chunk checkpoint exists; skipping. ({part_path})")
         return 0
 
+    # Determine which trials in this chunk are already done (per-trial files)
+    trial_indices = list(range(start, start + count))
+    remaining = [
+        t for t in trial_indices
+        if not _null_trial_score_path(checkpoint_dir, t).exists()
+    ]
+
     _print_section("Running null model chunk")
     print(f"  Total trials       : {total_trials:,d}")
     print(f"  Chunk index        : {chunk_index} / {chunk_count - 1}")
-    print(f"  Chunk start        : {start}")
-    print(f"  Chunk trials       : {count}")
+    print(f"  Chunk trial range  : {start}–{start + count - 1}")
+    print(f"  Already done       : {count - len(remaining)}")
+    print(f"  Remaining          : {len(remaining)}")
 
-    config = ChordConfig(
-        random_trials=total_trials,
-        random_seed=args.random_seed,
-        fdr_alpha=args.fdr_alpha,
-        top_pairs_to_report=args.top_pairs,
-    )
-    progress_interval_sec: float | None = (
-        args.progress_interval_sec if args.progress_interval_sec and args.progress_interval_sec > 0 else None
-    )
+    if not remaining:
+        print("  All trials in this chunk already checkpointed.")
+    else:
+        config = ChordConfig(
+            random_trials=total_trials,
+            random_seed=args.random_seed,
+            fdr_alpha=args.fdr_alpha,
+            top_pairs_to_report=args.top_pairs,
+        )
+        use_progress = (
+            args.progress_interval_sec
+            and args.progress_interval_sec > 0
+        )
 
-    null_scores, null_pair_details = null_model_best_scores(
-        craters,
-        config=config,
-        n_trials=total_trials,
-        seed=args.random_seed,
-        trial_offset=start,
-        trial_count=count,
-        progress_interval_sec=progress_interval_sec,
-        save_pair_details=True,
-    )
+        # Pre-filter craters once for all trials in this chunk
+        from moonpiercer.null_model import (
+            prefilter_qualifying_craters,
+            run_single_null_trial,
+        )
+        qualifying = prefilter_qualifying_craters(craters, config)
+        n_qualifying = len(qualifying)
+        print(
+            f"  Qualifying craters : {n_qualifying:,d} / {len(craters):,d}",
+        )
+
+        if n_qualifying < 2:
+            print("  Fewer than 2 qualifying craters — all null scores will be 0.")
+            for trial_idx in remaining:
+                np.save(
+                    str(_null_trial_score_path(checkpoint_dir, trial_idx)),
+                    np.array([0.0]),
+                )
+                save_json({}, _null_trial_details_path(checkpoint_dir, trial_idx))
+        else:
+            # Derive all seed sequences upfront (indexed by global trial number)
+            all_seeds = np.random.SeedSequence(args.random_seed).spawn(total_trials)
+
+            next_report = time.monotonic() + (args.progress_interval_sec or 60)
+            for i, trial_idx in enumerate(remaining):
+                t_trial = time.monotonic()
+                score, details = run_single_null_trial(
+                    qualifying, all_seeds[trial_idx], config,
+                    save_pair_details=True,
+                )
+
+                # Save immediately — this trial is now crash-safe
+                np.save(
+                    str(_null_trial_score_path(checkpoint_dir, trial_idx)),
+                    np.array([score]),
+                )
+                save_json(
+                    details,
+                    _null_trial_details_path(checkpoint_dir, trial_idx),
+                )
+
+                trial_elapsed = time.monotonic() - t_trial
+                if use_progress and time.monotonic() >= next_report:
+                    done_in_chunk = i + 1
+                    overall_done = sum(
+                        1 for t in trial_indices
+                        if _null_trial_score_path(checkpoint_dir, t).exists()
+                    )
+                    elapsed = time.monotonic() - t_start
+                    print(
+                        f"  [chunk {chunk_index}] trial {trial_idx} done "
+                        f"({trial_elapsed:.1f}s)  |  "
+                        f"chunk {done_in_chunk}/{len(remaining)}  |  "
+                        f"elapsed {elapsed:.0f}s",
+                        flush=True,
+                    )
+                    next_report = time.monotonic() + args.progress_interval_sec
+
+    # Assemble chunk file from individual trial files (for _run_final compat)
+    chunk_scores = []
+    chunk_details = []
+    for trial_idx in trial_indices:
+        trial_path = _null_trial_score_path(checkpoint_dir, trial_idx)
+        if trial_path.exists():
+            chunk_scores.append(float(np.load(str(trial_path))[0]))
+        else:
+            chunk_scores.append(0.0)
+        trial_det_path = _null_trial_details_path(checkpoint_dir, trial_idx)
+        if trial_det_path.exists():
+            chunk_details.append(load_json(trial_det_path))
+        else:
+            chunk_details.append({})
+
     null_runtime = round(time.monotonic() - t_start, 2)
-    np.save(str(part_path), null_scores)
 
-    # Save best-pair details alongside scores (enables rescoring)
+    np.save(str(part_path), np.array(chunk_scores, dtype=np.float64))
     details_path = part_path.parent / part_path.name.replace(".npy", "_details.json")
-    save_json(null_pair_details, details_path)
+    save_json(chunk_details, details_path)
 
     part_meta = {
         "chunk_index": chunk_index,
@@ -910,20 +1003,24 @@ def _run_null(args: argparse.Namespace) -> int:
         1 for i in range(chunk_count)
         if _null_part_path(checkpoint_dir, i).exists()
     )
+    completed_trials = sum(
+        1 for t in range(total_trials)
+        if _null_trial_score_path(checkpoint_dir, t).exists()
+    )
     print()
     print(f"  ══════════════════════════════════════════════")
     print(f"  Null chunk {chunk_index} COMPLETE in {null_runtime:.1f}s")
-    print(f"  Overall null progress: {completed_chunks}/{chunk_count} chunks done"
-          f" ({completed_chunks / chunk_count:.0%})")
+    print(f"  Overall: {completed_trials}/{total_trials} trials done"
+          f"  ({completed_chunks}/{chunk_count} chunks complete)")
     if completed_chunks < chunk_count:
-        missing = [
+        missing_chunks = [
             i for i in range(chunk_count)
             if not _null_part_path(checkpoint_dir, i).exists()
         ]
-        if len(missing) <= 10:
-            print(f"  Missing chunks: {missing}")
+        if len(missing_chunks) <= 10:
+            print(f"  Incomplete chunks: {missing_chunks}")
         else:
-            print(f"  Missing chunks: {len(missing)} remaining")
+            print(f"  Incomplete chunks: {len(missing_chunks)} remaining")
     print(f"  ══════════════════════════════════════════════")
 
     return 0

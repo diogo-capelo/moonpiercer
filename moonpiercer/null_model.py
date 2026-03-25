@@ -88,6 +88,63 @@ def _random_positions_on_sphere(
 # Monte Carlo null model — sequential entry point
 # ======================================================================
 
+def prefilter_qualifying_craters(
+    craters: pd.DataFrame,
+    config: ChordConfig,
+) -> pd.DataFrame:
+    """Pre-filter to craters that meet pairing thresholds.
+
+    Craters with FI < ``config.min_freshness`` or depth proxy below
+    ``config.min_depth_proxy`` never participate in any pair, so removing
+    them upfront is mathematically equivalent but dramatically reduces
+    kd-tree size and query time.
+    """
+    mask = craters["freshness_index"] >= config.min_freshness
+    if "depth_proxy" in craters.columns:
+        mask &= craters["depth_proxy"] >= config.min_depth_proxy
+    return craters[mask].reset_index(drop=True)
+
+
+def run_single_null_trial(
+    qualifying: pd.DataFrame,
+    child_seed: np.random.SeedSequence,
+    config: ChordConfig,
+    save_pair_details: bool = False,
+) -> tuple[float, dict]:
+    """Run one null trial: randomise positions, find best pair score.
+
+    Parameters
+    ----------
+    qualifying : DataFrame
+        Pre-filtered craters (output of ``prefilter_qualifying_craters``).
+    child_seed : SeedSequence
+        Per-trial seed for reproducible randomisation.
+    config : ChordConfig
+    save_pair_details : bool
+
+    Returns
+    -------
+    score : float
+    details : dict
+        Best-pair characteristics (empty dict if *save_pair_details* is False
+        or no qualifying pairs were found).
+    """
+    rng = np.random.default_rng(child_seed)
+    rand_lon, rand_lat = _random_positions_on_sphere(len(qualifying), rng)
+    random_cat = qualifying.copy()
+    random_cat["lon_deg"] = rand_lon
+    random_cat["lat_deg"] = rand_lat
+
+    if save_pair_details:
+        score, details = max_pair_score(random_cat, config, return_details=True)
+    else:
+        score = max_pair_score(random_cat, config)
+        details = {}
+
+    del random_cat, rand_lon, rand_lat
+    return float(score), details
+
+
 def null_model_best_scores(
     craters: pd.DataFrame,
     config: ChordConfig | None = None,
@@ -103,12 +160,6 @@ def null_model_best_scores(
     Each trial randomises crater positions on the sphere (preserving all
     other attributes), then computes the maximum pair score using the
     memory-efficient ``max_pair_score`` function (O(1) pair storage).
-
-    Before the trial loop, the catalogue is pre-filtered to craters that
-    meet the pairing thresholds (FI >= min_freshness, depth >= min_depth).
-    Non-qualifying craters never participate in any pair, so excluding
-    them is mathematically equivalent but dramatically reduces the
-    kd-tree size and query time.
 
     Parameters
     ----------
@@ -157,16 +208,7 @@ def null_model_best_scores(
     if trial_count == 0:
         return np.array([], dtype=np.float64)
 
-    # ------------------------------------------------------------------
-    # Pre-filter to craters eligible for pairing.
-    # build_chord_pairs / max_pair_score skip craters with FI < min_fi
-    # or depth < min_depth anyway, so excluding them upfront only
-    # removes dead weight from the kd-tree and query loops.
-    # ------------------------------------------------------------------
-    mask = craters["freshness_index"] >= config.min_freshness
-    if "depth_proxy" in craters.columns:
-        mask &= craters["depth_proxy"] >= config.min_depth_proxy
-    qualifying = craters[mask].reset_index(drop=True)
+    qualifying = prefilter_qualifying_craters(craters, config)
     n_qualifying = len(qualifying)
 
     print(
@@ -190,28 +232,17 @@ def null_model_best_scores(
     total_trials = len(child_seeds)
     use_progress = progress_interval_sec is not None and progress_interval_sec > 0
     best_scores = np.zeros(total_trials, dtype=np.float64)
-    all_details: list[dict] = [] if save_pair_details else []
+    all_details: list[dict] = []
     t_start = time.monotonic()
     next_report = t_start + progress_interval_sec if use_progress else None
 
     for trial, cs in enumerate(child_seeds):
-        rng = np.random.default_rng(cs)
-        rand_lon, rand_lat = _random_positions_on_sphere(n_qualifying, rng)
-        random_cat = qualifying.copy()
-        random_cat["lon_deg"] = rand_lon
-        random_cat["lat_deg"] = rand_lat
-
+        score, details = run_single_null_trial(
+            qualifying, cs, config, save_pair_details=save_pair_details,
+        )
+        best_scores[trial] = score
         if save_pair_details:
-            score, details = max_pair_score(
-                random_cat, config, return_details=True,
-            )
-            best_scores[trial] = score
             all_details.append(details)
-        else:
-            best_scores[trial] = max_pair_score(random_cat, config)
-
-        # Explicitly free large objects before the next trial.
-        del random_cat, rand_lon, rand_lat
 
         if next_report is not None and time.monotonic() >= next_report:
             done = trial + 1
