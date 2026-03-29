@@ -21,6 +21,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLOTS_PDF_DIR: Path = _PROJECT_ROOT / "plots" / "pdf"
 PLOTS_PNG_DIR: Path = _PROJECT_ROOT / "plots" / "png"
 RESULTS_DIR: Path = _PROJECT_ROOT / "results"
+PAPER_FIGURES_DIR: Path = _PROJECT_ROOT / "paper" / "figures"
 
 
 def ensure_dir(path: Path) -> Path:

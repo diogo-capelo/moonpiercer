@@ -158,9 +158,8 @@ cat results/slurm_logs/stage_logs/global_final_<JOBID>.out
 
 ### After a Run
 
-Open `notebooks/analysis.ipynb` to generate figures and review results. The
-notebook auto-detects whether HPC outputs are present and falls back to
-methodology-only figures otherwise.
+Open `analysis/analysis.ipynb` for the full post-run analysis, or
+`analysis/methodology.ipynb` for data-independent methodology figures.
 
 ## Project Structure
 
@@ -188,8 +187,11 @@ moonpiercer/
 │   ├── plotting.py                  # Visualisation utilities
 │   └── wms.py                       # WMS client for LROC NAC and LOLA
 ├── tests/                           # Unit tests (pytest)
-├── notebooks/
-│   └── analysis.ipynb               # Post-run analysis and figure generation
+├── analysis/
+│   ├── methodology.ipynb            # Data-independent methodology figures
+│   └── analysis.ipynb               # Full post-run analysis
+├── paper/
+│   └── figures/                     # Publication-quality PDF figures
 ├── plots/                           # Output figures (pdf/, png/)
 ├── results/                         # Pipeline outputs
 │   └── slurm_logs/
