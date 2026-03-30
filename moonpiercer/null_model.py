@@ -273,19 +273,33 @@ def empirical_p_value(
     return float((np.sum(null_scores >= score) + 1) / (n + 1))
 
 
+def percentile_score(
+    score: float,
+    null_scores: np.ndarray,
+) -> float:
+    """Fraction of null-trial best scores beaten by *score*.
+
+    Returns a value in [0, 1] where 0.95 means the pair beats 95% of
+    null trials.  Uses the same +1 correction as ``empirical_p_value``
+    (Davison & Hinkley 1997) so that ``percentile_score = 1 - p_value``.
+    """
+    return 1.0 - empirical_p_value(score, null_scores)
+
+
 def compute_significance(
     real_pairs: pd.DataFrame,
     null_best_scores: np.ndarray,
     alpha: float = 0.05,
 ) -> pd.DataFrame:
-    """Add p-values and BH-FDR significance to the real pairs.
+    """Add p-values, percentile scores, and BH-FDR significance.
 
-    Adds columns: ``p_value``, ``bh_significant``.
+    Adds columns: ``p_value``, ``percentile_score``, ``bh_significant``.
     Returns a copy.
     """
     if real_pairs.empty:
         df = real_pairs.copy()
         df["p_value"] = pd.Series(dtype=float)
+        df["percentile_score"] = pd.Series(dtype=float)
         df["bh_significant"] = pd.Series(dtype=bool)
         return df
 
@@ -293,5 +307,6 @@ def compute_significance(
     scores = df["score"].to_numpy()
     p_values = np.array([empirical_p_value(s, null_best_scores) for s in scores])
     df["p_value"] = p_values
+    df["percentile_score"] = 1.0 - p_values
     df["bh_significant"] = benjamini_hochberg(p_values, alpha=alpha)
     return df

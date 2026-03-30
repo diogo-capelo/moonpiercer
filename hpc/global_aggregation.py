@@ -624,7 +624,7 @@ def _run_full(args: argparse.Namespace) -> int:
             "score", "T_diametrality",
             "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
             "T_position", "chord_length_m", "expected_ellipticity",
-            "p_value", "bh_significant",
+            "p_value", "percentile_score", "bh_significant",
         ]).to_csv(all_pairs_path, index=False)
     print(f"  Saved: {all_pairs_path}")
 
@@ -1109,7 +1109,7 @@ def _run_final(args: argparse.Namespace) -> int:
             "score", "T_diametrality",
             "T_radius", "T_freshness", "T_ellipticity", "T_orientation",
             "T_position", "chord_length_m", "expected_ellipticity",
-            "p_value", "bh_significant",
+            "p_value", "percentile_score", "bh_significant",
         ]).to_csv(all_pairs_path, index=False)
     print(f"  Saved: {all_pairs_path}")
 

@@ -11,6 +11,7 @@ from moonpiercer.null_model import (
     compute_significance,
     empirical_p_value,
     null_model_best_scores,
+    percentile_score,
 )
 
 
@@ -142,6 +143,31 @@ class TestNullModelBestScores:
         assert (scores >= 0).all()
 
 
+class TestPercentileScore:
+    def test_highest_score(self):
+        """Score above all null → percentile ≈ 1 - 1/(n+1)."""
+        null = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        ps = percentile_score(0.6, null)
+        assert ps == pytest.approx(1.0 - 1.0 / 6.0)
+
+    def test_lowest_score(self):
+        """Score below all null → percentile ≈ 0."""
+        null = np.array([0.5, 0.6, 0.7, 0.8, 0.9])
+        ps = percentile_score(0.1, null)
+        assert ps == pytest.approx(0.0)
+
+    def test_inverse_of_p_value(self):
+        null = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        score = 0.35
+        p = empirical_p_value(score, null)
+        ps = percentile_score(score, null)
+        assert ps == pytest.approx(1.0 - p)
+
+    def test_empty_null(self):
+        ps = percentile_score(0.5, np.array([]))
+        assert ps == 0.0
+
+
 class TestComputeSignificance:
     def test_adds_columns(self):
         pairs = pd.DataFrame({
@@ -152,11 +178,27 @@ class TestComputeSignificance:
         null_scores = np.array([0.4, 0.5, 0.6, 0.45, 0.55] * 10)
         result = compute_significance(pairs, null_scores, alpha=0.05)
         assert "p_value" in result.columns
+        assert "percentile_score" in result.columns
         assert "bh_significant" in result.columns
         assert len(result) == 3
+
+    def test_percentile_score_consistency(self):
+        """percentile_score should equal 1 - p_value."""
+        pairs = pd.DataFrame({
+            "score": [0.9, 0.5, 0.3],
+            "idx_a": [0, 2, 4],
+            "idx_b": [1, 3, 5],
+        })
+        null_scores = np.array([0.4, 0.5, 0.6, 0.45, 0.55] * 10)
+        result = compute_significance(pairs, null_scores, alpha=0.05)
+        np.testing.assert_allclose(
+            result["percentile_score"].values,
+            1.0 - result["p_value"].values,
+        )
 
     def test_empty_pairs(self):
         pairs = pd.DataFrame(columns=["score", "idx_a", "idx_b"])
         result = compute_significance(pairs, np.array([0.1, 0.2]), alpha=0.05)
         assert len(result) == 0
         assert "p_value" in result.columns
+        assert "percentile_score" in result.columns
