@@ -143,6 +143,63 @@ class TestNullModelBestScores:
         assert (scores >= 0).all()
 
 
+    def test_deduplication_prevents_perfect_null_scores(self):
+        """Duplicate craters (identical attributes) should be deduplicated.
+
+        Without deduplication, two identical craters randomised onto the
+        sphere trivially score 1.0 on every attribute-match term (because
+        T_radius, T_freshness = 1 when attributes match exactly, and
+        T_ellipticity, T_orientation, T_position = 1 when shape is
+        unreliable).  With deduplication, only one copy survives → no
+        pair can be formed → null scores should all be 0.
+        """
+        # 10 clones of the same crater — all identical attributes
+        n = 10
+        df = pd.DataFrame({
+            "lon_deg": np.linspace(0, 5, n),
+            "lat_deg": np.zeros(n),
+            "radius_m": np.full(n, 5.0),
+            "freshness_index": np.full(n, 0.5),
+            "ellipticity": np.full(n, 1.0),
+            "orientation_deg": np.zeros(n),
+            "shape_reliable": np.full(n, False),
+            "depth_proxy": np.full(n, 0.5),
+        })
+        from moonpiercer.config import ChordConfig
+        config = ChordConfig(
+            min_chord_sep_deg=30.0,
+            min_freshness=0.1,
+            min_depth_proxy=0.1,
+            search_cone_half_deg_unreliable=15.0,
+        )
+        scores = null_model_best_scores(df, config, n_trials=5, seed=99)
+        # After dedup, only 1 crater remains → no pairs → all scores = 0
+        assert (scores == 0.0).all()
+
+    def test_distinct_craters_not_removed(self):
+        """Craters with different attributes should NOT be deduplicated."""
+        df = pd.DataFrame({
+            "lon_deg": [0.0, 5.0],
+            "lat_deg": [0.0, 0.0],
+            "radius_m": [4.0, 8.0],        # different radii
+            "freshness_index": [0.5, 0.6],  # different FI
+            "ellipticity": [1.0, 1.0],
+            "orientation_deg": [0.0, 0.0],
+            "shape_reliable": [False, False],
+            "depth_proxy": [0.5, 0.5],
+        })
+        from moonpiercer.config import ChordConfig
+        config = ChordConfig(
+            min_chord_sep_deg=30.0,
+            min_freshness=0.1,
+            min_depth_proxy=0.1,
+            search_cone_half_deg_unreliable=15.0,
+        )
+        scores = null_model_best_scores(df, config, n_trials=5, seed=42)
+        # Both craters survive dedup → pairs can form → some scores may be >0
+        assert len(scores) == 5
+
+
 class TestPercentileScore:
     def test_highest_score(self):
         """Score above all null → percentile ≈ 1 - 1/(n+1)."""

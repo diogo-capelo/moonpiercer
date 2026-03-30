@@ -31,6 +31,38 @@ def ensure_dir(path: Path) -> Path:
 
 
 # ------------------------------------------------------------------
+# Catalogue cleaning
+# ------------------------------------------------------------------
+
+def deduplicate_craters(craters: pd.DataFrame) -> pd.DataFrame:
+    """Remove duplicate craters that share identical measured attributes.
+
+    Overlapping NAC CCDs (RE/RC, LE/LC) detect the same physical crater
+    multiple times, producing rows with identical radius, freshness,
+    ellipticity, orientation, *and* position but different ``product_id``.
+    These clones bias both the real pairing (a clone pair trivially
+    scores 1.0 on every attribute-match term) and the null model
+    (randomised clone pairs still match perfectly on attributes).
+
+    We keep one representative per unique attribute fingerprint.  The
+    position columns (lon_deg, lat_deg) are deliberately excluded from
+    the fingerprint since verified duplicates share exact positions and
+    the null model randomises them anyway.
+
+    This is safe for physically distinct craters: two real craters
+    measured from different images will have different float-precision
+    attribute values and will *not* be collapsed.
+    """
+    attr_cols = ["radius_m", "freshness_index", "ellipticity",
+                 "orientation_deg", "shape_reliable"]
+    avail = [c for c in attr_cols if c in craters.columns]
+    if not avail:
+        return craters
+
+    return craters.drop_duplicates(subset=avail).reset_index(drop=True)
+
+
+# ------------------------------------------------------------------
 # CSV / JSON persistence
 # ------------------------------------------------------------------
 

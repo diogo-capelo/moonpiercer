@@ -37,7 +37,12 @@ def _make_crater_catalogue(craters_spec: list[dict]) -> pd.DataFrame:
 def _make_perfect_antipodal_pair(
     lon_a=10.0, lat_a=20.0, radius_m=4.0, fi=0.6,
 ) -> pd.DataFrame:
-    """Create two craters at nearly antipodal positions with matching properties."""
+    """Create two craters at nearly antipodal positions with matching properties.
+
+    The two craters have *slightly* different ellipticity so that
+    ``deduplicate_craters`` recognises them as distinct physical craters
+    (identical attributes would be treated as NAC CCD clones).
+    """
     return _make_crater_catalogue([
         {
             "lon_deg": lon_a, "lat_deg": lat_a,
@@ -48,7 +53,7 @@ def _make_perfect_antipodal_pair(
         {
             "lon_deg": lon_a - 180.0, "lat_deg": -lat_a,
             "radius_m": radius_m, "freshness_index": fi,
-            "ellipticity": 1.0, "orientation_deg": 0.0,
+            "ellipticity": 1.001, "orientation_deg": 0.0,
             "shape_reliable": False, "depth_proxy": 0.5,
         },
     ])

@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from moonpiercer.config import ChordConfig
+from moonpiercer.io_utils import deduplicate_craters
 from moonpiercer.pairing import max_pair_score
 
 
@@ -208,12 +209,14 @@ def null_model_best_scores(
     if trial_count == 0:
         return np.array([], dtype=np.float64)
 
-    qualifying = prefilter_qualifying_craters(craters, config)
+    deduped = deduplicate_craters(craters)
+    qualifying = prefilter_qualifying_craters(deduped, config)
     n_qualifying = len(qualifying)
 
     print(
-        f"[null_model] Pre-filtered to {n_qualifying:,d} qualifying craters "
-        f"(from {len(craters):,d})",
+        f"[null_model] De-duplicated to {len(deduped):,d} unique attribute "
+        f"fingerprints (from {len(craters):,d}), then pre-filtered to "
+        f"{n_qualifying:,d} qualifying craters",
         file=sys.stderr,
         flush=True,
     )

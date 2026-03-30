@@ -31,6 +31,7 @@ from moonpiercer.geometry import (
     predict_exit_point,
     separation_from_ellipticity,
 )
+from moonpiercer.io_utils import deduplicate_craters
 from moonpiercer.velocity import offset_probability_factor
 
 
@@ -388,9 +389,18 @@ def build_chord_pairs(
     if config is None:
         config = ChordConfig()
 
+    # Deduplicate: overlapping NAC CCDs produce exact clones of the same
+    # physical crater.  Without removal, clones pair with score=1.0.
+    craters = deduplicate_craters(craters)
+
     n = len(craters)
     if n < 2:
         return pd.DataFrame()
+
+    print(
+        f"[pairing] After deduplication: {n:,d} unique craters",
+        file=sys.stderr, flush=True,
+    )
 
     # Build unit vectors
     lons = craters["lon_deg"].to_numpy(dtype=np.float64)
