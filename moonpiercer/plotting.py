@@ -470,7 +470,7 @@ def plot_annotated_chip(
         ax.set_title(title or "No craters detected")
         return fig
 
-    fi = detections["freshness_index"].to_numpy()
+    fi = detections["freshness_index"].to_numpy(dtype=float)
     fi_norm = np.clip(fi, 0, 1)
     cmap = cm.viridis
 
@@ -585,9 +585,9 @@ def plot_spatial_coverage(
         ax.grid(True, alpha=0.3)
         return fig
 
-    lons = np.deg2rad(craters["lon_deg"].to_numpy())
-    lats = np.deg2rad(craters["lat_deg"].to_numpy())
-    fi = craters["freshness_index"].to_numpy() if "freshness_index" in craters.columns else np.ones(len(craters))
+    lons = np.deg2rad(craters["lon_deg"].to_numpy(dtype=float))
+    lats = np.deg2rad(craters["lat_deg"].to_numpy(dtype=float))
+    fi = craters["freshness_index"].to_numpy(dtype=float) if "freshness_index" in craters.columns else np.ones(len(craters))
 
     sc = ax.scatter(lons, lats, c=fi, s=1, cmap="viridis", alpha=0.5, vmin=0, vmax=1)
     cbar = fig.colorbar(sc, ax=ax, fraction=0.03, pad=0.04)
@@ -616,32 +616,32 @@ def plot_chord_map(
 
     top = pairs.head(n_best)
     cmap = plt.cm.hot_r
-    scores = top["score"].to_numpy()
+    scores = top["score"].to_numpy(dtype=float)
     s_min, s_max = scores.min(), scores.max()
 
     for _, row in top.iterrows():
         v1 = lonlat_to_unit_vectors(
-            np.array([row["lon_a"]]), np.array([row["lat_a"]])
+            np.array([row["lon_a"]], dtype=float), np.array([row["lat_a"]], dtype=float)
         ).ravel()
         v2 = lonlat_to_unit_vectors(
-            np.array([row["lon_b"]]), np.array([row["lat_b"]])
+            np.array([row["lon_b"]], dtype=float), np.array([row["lat_b"]], dtype=float)
         ).ravel()
         arc_lons, arc_lats = slerp_arc(v1, v2, n_points=80)
 
-        norm_score = (row["score"] - s_min) / (s_max - s_min + 1e-10)
+        norm_score = (float(row["score"]) - s_min) / (s_max - s_min + 1e-10)
         color = cmap(norm_score)
 
         ax.plot(
-            np.deg2rad(np.asarray(arc_lons)),
-            np.deg2rad(np.asarray(arc_lats)),
+            np.deg2rad(np.asarray(arc_lons, dtype=float)),
+            np.deg2rad(np.asarray(arc_lats, dtype=float)),
             "-", color=color, alpha=0.7, lw=1.5,
         )
         ax.plot(
-            np.deg2rad(row["lon_a"]), np.deg2rad(row["lat_a"]),
+            np.deg2rad(float(row["lon_a"])), np.deg2rad(float(row["lat_a"])),
             "o", color=color, ms=4,
         )
         ax.plot(
-            np.deg2rad(row["lon_b"]), np.deg2rad(row["lat_b"]),
+            np.deg2rad(float(row["lon_b"])), np.deg2rad(float(row["lat_b"])),
             "s", color=color, ms=4,
         )
 
@@ -828,8 +828,8 @@ def plot_crater_map_with_pairs(
 
     # --- All craters (background) ---
     if not craters.empty and "lon_deg" in craters.columns:
-        lons_all = np.deg2rad(craters["lon_deg"].to_numpy())
-        lats_all = np.deg2rad(craters["lat_deg"].to_numpy())
+        lons_all = np.deg2rad(craters["lon_deg"].to_numpy(dtype=float))
+        lats_all = np.deg2rad(craters["lat_deg"].to_numpy(dtype=float))
         ax.scatter(
             lons_all, lats_all, s=0.3, c="0.78", alpha=0.25,
             rasterized=True, zorder=1,
@@ -848,27 +848,27 @@ def plot_crater_map_with_pairs(
             size_exit = size_entry
 
             ax.scatter(
-                np.deg2rad(row["lon_a"]), np.deg2rad(row["lat_a"]),
+                np.deg2rad(float(row["lon_a"])), np.deg2rad(float(row["lat_a"])),
                 s=size_entry, c=[color], marker="o", edgecolors="k",
                 linewidths=0.5, zorder=3,
             )
             ax.scatter(
-                np.deg2rad(row["lon_b"]), np.deg2rad(row["lat_b"]),
+                np.deg2rad(float(row["lon_b"])), np.deg2rad(float(row["lat_b"])),
                 s=size_exit, c=[color], marker="s", edgecolors="k",
                 linewidths=0.5, zorder=3,
             )
 
             # Great-circle arc
             v1 = lonlat_to_unit_vectors(
-                np.array([row["lon_a"]]), np.array([row["lat_a"]])
+                np.array([row["lon_a"]], dtype=float), np.array([row["lat_a"]], dtype=float)
             ).ravel()
             v2 = lonlat_to_unit_vectors(
-                np.array([row["lon_b"]]), np.array([row["lat_b"]])
+                np.array([row["lon_b"]], dtype=float), np.array([row["lat_b"]], dtype=float)
             ).ravel()
             arc_lons, arc_lats = slerp_arc(v1, v2, n_points=80)
             ax.plot(
-                np.deg2rad(np.asarray(arc_lons)),
-                np.deg2rad(np.asarray(arc_lats)),
+                np.deg2rad(np.asarray(arc_lons, dtype=float)),
+                np.deg2rad(np.asarray(arc_lats, dtype=float)),
                 "-", color=color, alpha=0.6, lw=1.2, zorder=2,
             )
 
