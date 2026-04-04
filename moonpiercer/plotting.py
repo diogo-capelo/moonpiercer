@@ -669,11 +669,11 @@ def plot_score_component_star(
     import matplotlib.pyplot as plt
 
     component_cols = [
-        "T_diametrality", "T_radius", "T_freshness",
+        "T_radius", "T_nls", "T_rcr",
         "T_ellipticity", "T_orientation", "T_position",
     ]
     labels = [
-        r"$T_{\rm diam}$", r"$T_{\rm radius}$", r"$T_{\rm fresh}$",
+        r"$T_{\rm radius}$", r"$T_{\rm NLS}$", r"$T_{\rm RCR}$",
         r"$T_{\rm ellip}$", r"$T_{\rm orient}$", r"$T_{\rm pos}$",
     ]
 

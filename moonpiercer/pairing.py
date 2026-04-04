@@ -159,8 +159,10 @@ def score_pair(
     sep_deg: float,
     radius_a_m: float,
     radius_b_m: float,
-    fi_a: float,
-    fi_b: float,
+    nls_a: float,
+    nls_b: float,
+    rcr_a: float,
+    rcr_b: float,
     ellipticity_a: float,
     ellipticity_b: float,
     orientation_a_deg: float,
@@ -177,22 +179,18 @@ def score_pair(
 ) -> dict:
     """Compute the full pair score and its component terms.
 
-    Returns a dict with keys: score, T_diametrality, T_radius,
-    T_freshness, T_ellipticity, T_orientation, T_position, T_velocity.
+    Returns a dict with keys: score, T_radius, T_nls, T_rcr,
+    T_ellipticity, T_orientation, T_position.
     """
-    # T_diametrality: sin(sep/2)^n ∈ [0, 1], weights longer chords more
-    if config.prefer_diametrality:
-        T_diam = float(np.sin(np.deg2rad(sep_deg / 2.0)) ** config.diametrality_exponent)
-    else:
-        T_diam = 1.0
-
     # T_radius
     dr = abs(radius_a_m - radius_b_m)
     T_radius = float(_gaussian_score(dr, config.sigma_radius))
 
-    # T_freshness
-    dfi = abs(fi_a - fi_b)
-    T_freshness = float(_gaussian_score(dfi, config.sigma_freshness))
+    # T_nls: Normalised LoG Strength match
+    T_nls = float(_gaussian_score(abs(nls_a - nls_b), config.sigma_nls))
+
+    # T_rcr: Rim Contrast Ratio match
+    T_rcr = float(_gaussian_score(abs(rcr_a - rcr_b), config.sigma_rcr))
 
     # T_ellipticity: compare each crater's measured ellipticity to
     # the predicted ellipticity from the chord geometry
@@ -240,13 +238,13 @@ def score_pair(
         config,
     )
 
-    score = T_diam * T_radius * T_freshness * T_ellip * T_orient * T_position
+    score = T_radius * T_nls * T_rcr * T_ellip * T_orient * T_position
 
     return {
         "score": score,
-        "T_diametrality": T_diam,
         "T_radius": T_radius,
-        "T_freshness": T_freshness,
+        "T_nls": T_nls,
+        "T_rcr": T_rcr,
         "T_ellipticity": T_ellip,
         "T_orientation": T_orient,
         "T_position": T_position,
@@ -267,9 +265,9 @@ def rescore_pairs(
 
     The input *pairs* must contain the columns saved by
     ``build_chord_pairs``: separation_deg, radius_a_m, radius_b_m,
-    fi_a, fi_b, ellipticity_a, ellipticity_b, lon_a, lat_a, lon_b,
-    lat_b, and (optionally) orientation_a_deg, orientation_b_deg,
-    shape_reliable_a, shape_reliable_b.
+    nls_a, nls_b, rcr_a, rcr_b, ellipticity_a, ellipticity_b,
+    lon_a, lat_a, lon_b, lat_b, and (optionally) orientation_a_deg,
+    orientation_b_deg, shape_reliable_a, shape_reliable_b.
 
     Returns a copy with updated score and T_* columns, re-sorted by
     descending score.
@@ -304,8 +302,10 @@ def rescore_pairs(
             sep_deg=float(row["separation_deg"]),
             radius_a_m=float(row["radius_a_m"]),
             radius_b_m=float(row["radius_b_m"]),
-            fi_a=float(row["fi_a"]),
-            fi_b=float(row["fi_b"]),
+            nls_a=float(row["nls_a"]),
+            nls_b=float(row["nls_b"]),
+            rcr_a=float(row["rcr_a"]),
+            rcr_b=float(row["rcr_b"]),
             ellipticity_a=float(row["ellipticity_a"]),
             ellipticity_b=float(row["ellipticity_b"]),
             orientation_a_deg=float(row["orientation_a_deg"]) if has_orient else 0.0,
@@ -409,7 +409,8 @@ def build_chord_pairs(
 
     # Extract columns
     radii = craters["radius_m"].to_numpy(dtype=np.float64)
-    fi = craters["freshness_index"].to_numpy(dtype=np.float64)
+    nls = craters["nls"].to_numpy(dtype=np.float64)
+    rcr = craters["rcr"].to_numpy(dtype=np.float64)
     ellip = craters["ellipticity"].to_numpy(dtype=np.float64)
     orient = craters["orientation_deg"].to_numpy(dtype=np.float64)
     reliable = craters["shape_reliable"].to_numpy(dtype=bool)
@@ -425,15 +426,10 @@ def build_chord_pairs(
     radius_px = craters["radius_px"].to_numpy(dtype=np.float64) if has_radius_px else np.full(n, np.nan)
 
     # Hard cut pre-filtering: only qualifying craters enter the kd-tree.
-    # This is the key optimisation for large catalogues — a 10° search
-    # cone on 1 M craters returns ~7 700 candidates, but 95 %+ fail the
-    # freshness/depth check.  Pre-filtering shrinks the tree and ensures
-    # every kd-tree hit is already a valid candidate.
-    min_fi = config.min_freshness
     min_depth = config.min_depth_proxy
     depth_proxy = craters["depth_proxy"].to_numpy(dtype=np.float64) if "depth_proxy" in craters.columns else np.ones(n)
 
-    qual_mask = (fi >= min_fi) & (depth_proxy >= min_depth)
+    qual_mask = depth_proxy >= min_depth
     qual_idx = np.where(qual_mask)[0]
     n_qual = len(qual_idx)
 
@@ -512,7 +508,9 @@ def build_chord_pairs(
                     continue
 
                 # Hard cuts
-                if abs(fi[i] - fi[j]) > config.max_freshness_diff:
+                if abs(nls[i] - nls[j]) > config.max_nls_diff:
+                    continue
+                if abs(rcr[i] - rcr[j]) > config.max_rcr_diff:
                     continue
                 if abs(radii[i] - radii[j]) > config.max_radius_diff_m:
                     continue
@@ -524,8 +522,10 @@ def build_chord_pairs(
                     sep_deg=sep,
                     radius_a_m=float(radii[i]),
                     radius_b_m=float(radii[j]),
-                    fi_a=float(fi[i]),
-                    fi_b=float(fi[j]),
+                    nls_a=float(nls[i]),
+                    nls_b=float(nls[j]),
+                    rcr_a=float(rcr[i]),
+                    rcr_b=float(rcr[j]),
                     ellipticity_a=float(ellip[i]),
                     ellipticity_b=float(ellip[j]),
                     orientation_a_deg=float(orient[i]),
@@ -556,8 +556,10 @@ def build_chord_pairs(
                     "radius_b_m": float(radii[j]),
                     "radius_px_a": float(radius_px[i]),
                     "radius_px_b": float(radius_px[j]),
-                    "fi_a": float(fi[i]),
-                    "fi_b": float(fi[j]),
+                    "nls_a": float(nls[i]),
+                    "nls_b": float(nls[j]),
+                    "rcr_a": float(rcr[i]),
+                    "rcr_b": float(rcr[j]),
                     "ellipticity_a": float(ellip[i]),
                     "ellipticity_b": float(ellip[j]),
                     "orientation_a_deg": float(orient[i]),
@@ -638,7 +640,8 @@ def max_pair_score(
     vectors = lonlat_to_unit_vectors(lons, lats)
 
     radii = craters["radius_m"].to_numpy(dtype=np.float64)
-    fi = craters["freshness_index"].to_numpy(dtype=np.float64)
+    nls = craters["nls"].to_numpy(dtype=np.float64)
+    rcr = craters["rcr"].to_numpy(dtype=np.float64)
     ellip = craters["ellipticity"].to_numpy(dtype=np.float64)
     orient = craters["orientation_deg"].to_numpy(dtype=np.float64)
     reliable = craters["shape_reliable"].to_numpy(dtype=bool)
@@ -648,7 +651,6 @@ def max_pair_score(
     orient_unc = craters["orientation_unc_deg"].to_numpy(dtype=np.float64) if has_orient_unc else np.full(n, np.nan)
     ellip_unc = craters["ellipticity_unc"].to_numpy(dtype=np.float64) if has_ellip_unc else np.full(n, np.nan)
 
-    min_fi = config.min_freshness
     min_depth = config.min_depth_proxy
     depth_proxy = (
         craters["depth_proxy"].to_numpy(dtype=np.float64)
@@ -657,7 +659,7 @@ def max_pair_score(
     )
 
     # Pre-filter: kd-tree from qualifying craters only (same as build_chord_pairs)
-    qual_mask = (fi >= min_fi) & (depth_proxy >= min_depth)
+    qual_mask = depth_proxy >= min_depth
     qual_idx = np.where(qual_mask)[0]
     n_qual = len(qual_idx)
 
@@ -703,7 +705,9 @@ def max_pair_score(
                 if j <= i:
                     continue
 
-                if abs(fi[i] - fi[j]) > config.max_freshness_diff:
+                if abs(nls[i] - nls[j]) > config.max_nls_diff:
+                    continue
+                if abs(rcr[i] - rcr[j]) > config.max_rcr_diff:
                     continue
                 if abs(radii[i] - radii[j]) > config.max_radius_diff_m:
                     continue
@@ -716,8 +720,10 @@ def max_pair_score(
                     sep_deg=sep,
                     radius_a_m=float(radii[i]),
                     radius_b_m=float(radii[j]),
-                    fi_a=float(fi[i]),
-                    fi_b=float(fi[j]),
+                    nls_a=float(nls[i]),
+                    nls_b=float(nls[j]),
+                    rcr_a=float(rcr[i]),
+                    rcr_b=float(rcr[j]),
                     ellipticity_a=float(ellip[i]),
                     ellipticity_b=float(ellip[j]),
                     orientation_a_deg=float(orient[i]),
@@ -747,8 +753,10 @@ def max_pair_score(
                             "separation_deg": sep,
                             "radius_a_m": float(radii[i]),
                             "radius_b_m": float(radii[j]),
-                            "fi_a": float(fi[i]),
-                            "fi_b": float(fi[j]),
+                            "nls_a": float(nls[i]),
+                            "nls_b": float(nls[j]),
+                            "rcr_a": float(rcr[i]),
+                            "rcr_b": float(rcr[j]),
                             "ellipticity_a": float(ellip[i]),
                             "ellipticity_b": float(ellip[j]),
                             "orientation_a_deg": float(orient[i]),

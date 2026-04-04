@@ -95,14 +95,14 @@ def prefilter_qualifying_craters(
 ) -> pd.DataFrame:
     """Pre-filter to craters that meet pairing thresholds.
 
-    Craters with FI < ``config.min_freshness`` or depth proxy below
-    ``config.min_depth_proxy`` never participate in any pair, so removing
-    them upfront is mathematically equivalent but dramatically reduces
-    kd-tree size and query time.
+    Craters below ``config.min_depth_proxy`` never participate in any
+    pair, so removing them upfront is mathematically equivalent but
+    dramatically reduces kd-tree size and query time.
     """
-    mask = craters["freshness_index"] >= config.min_freshness
     if "depth_proxy" in craters.columns:
-        mask &= craters["depth_proxy"] >= config.min_depth_proxy
+        mask = craters["depth_proxy"] >= config.min_depth_proxy
+    else:
+        mask = pd.Series(True, index=craters.index)
     return craters[mask].reset_index(drop=True)
 
 

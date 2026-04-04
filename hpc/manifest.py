@@ -353,8 +353,40 @@ def collect_nac_products_full_sphere(
     products["center_lon"] = products["center_lon"].astype(float)
     products["center_lat"] = products["center_lat"].astype(float)
     products = products.sort_values("resolution_mpp", ascending=True).reset_index(drop=True)
-    print(f"[manifest] discovered {len(products):,} unique products.", flush=True)
+    n_before = len(products)
+
+    products = _dedup_calibration_levels(products)
+    print(
+        f"[manifest] discovered {n_before:,} unique products, "
+        f"{len(products):,} after calibration-level dedup.",
+        flush=True,
+    )
     return products
+
+
+# ---------------------------------------------------------------------------
+# Calibration-level deduplication
+# ---------------------------------------------------------------------------
+
+def _dedup_calibration_levels(products: pd.DataFrame) -> pd.DataFrame:
+    """Keep one calibration level per observation stem.
+
+    NAC product IDs end with ``<L|R><E|C>`` where L/R identifies the
+    left/right camera and E/C is the EDR/CDR calibration level.  E and C
+    versions of the same image produce identical crater detections, so
+    processing both wastes HPC time and creates duplicate craters.
+
+    Group by observation stem (``product_id[:-1]``, e.g.
+    ``M175462328R``) and keep the row with best (lowest) resolution.
+    """
+    if products.empty or "product_id" not in products.columns:
+        return products.copy()
+
+    df = products.copy()
+    df["_obs_stem"] = df["product_id"].str[:-1]
+    df = df.sort_values("resolution_mpp")
+    df = df.drop_duplicates(subset="_obs_stem", keep="first")
+    return df.drop(columns="_obs_stem").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

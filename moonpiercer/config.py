@@ -120,22 +120,27 @@ class ChordConfig:
     freshness_rcr_scale: float = 8.0
     """Scaling constant for RCR → [0, 1] mapping."""
 
-    min_freshness: float = 0.05
-    """Minimum Freshness Index for a crater to participate in pairing.
+    # ------------------------------------------------------------------
+    # NLS / RCR pair-matching
+    # ------------------------------------------------------------------
+    sigma_nls: float = 0.71
+    """Gaussian width for the NLS-match scoring term.
 
-    Set just above the noise floor — crater quality is ensured by
-    min_depth_proxy and min_circularity.  Freshness is used as a
-    correlation metric (sigma_freshness), not an absolute age gate."""
+    Data-driven: set to 2× the P95 of |ΔNLS| measured across 2,004
+    cross-observation matches of the same physical crater (different
+    NAC observations).  NLS range is typically [1.0, 3.2]."""
 
-    max_freshness_diff: float = 0.30
-    """Hard cut: maximum |ΔFI| between paired craters."""
+    sigma_rcr: float = 1.92
+    """Gaussian width for the RCR-match scoring term.
 
-    sigma_freshness: float = 0.01
-    """Gaussian width for the freshness-match scoring term.
+    Data-driven: set to 2× the P95 of |ΔRCR| measured across 2,004
+    cross-observation matches.  RCR range is typically [0, 10]."""
 
-    Freshness Index is continuous and well-resolved, so a tight sigma
-    (strong penalty for mismatches) is appropriate.  Set to 0.01 so that
-    pairs must match in age to within ~1 FI unit to score well."""
+    max_nls_diff: float = 1.5
+    """Hard cut: maximum |ΔNLS| between paired craters (~4× P95 noise)."""
+
+    max_rcr_diff: float = 4.0
+    """Hard cut: maximum |ΔRCR| between paired craters (~4× P95 noise)."""
 
     # ------------------------------------------------------------------
     # Chord pairing
@@ -187,22 +192,6 @@ class ChordConfig:
     Both craters' major axes should align with the great circle
     connecting them.  Set to 3° — tight but within the measurement
     noise for shape-reliable craters (radius ≥ 5 px)."""
-
-    prefer_diametrality: bool = False
-    """If True, the scoring function includes T_diametrality = sin(sep/2)^n.
-
-    Default False: for an isotropic PBH flux, off-centre trajectories
-    vastly outnumber diametral ones, so preferring diametrality would
-    bias against the most likely chord geometries.  The hard minimum
-    separation cut (min_chord_sep_deg) already excludes trivially short
-    chords; highly eccentric craters from short chords are penalised by
-    T_ellipticity."""
-
-    diametrality_exponent: float = 2.0
-    """Exponent for the diametrality term: sin(sep/2)^n.
-
-    Higher values more aggressively penalise non-diametral chords.
-    n=1 is linear, n=2 (default) is quadratic."""
 
     pair_k_neighbors: int = 32
     """kd-tree query size for the nearest-neighbour search."""

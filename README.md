@@ -32,9 +32,9 @@ For each fresh crater (`FI ≥ 0.15`, depth proxy `≥ 0.22`):
   exit point is computed on the unit sphere.
 - A kd-tree query finds candidates within a search cone around the
   prediction (2° for shape-reliable craters, 10° otherwise).
-- Candidate pairs are scored on six criteria: diametrality, radius match,
-  freshness match, ellipticity match, orientation alignment, and velocity
-  plausibility under the Standard Halo Model Maxwell-Boltzmann PBH
+- Candidate pairs are scored on five criteria: radius match,
+  freshness match, ellipticity match, orientation alignment, and
+  position prediction accuracy under the Standard Halo Model PBH
   velocity distribution.
 
 ### 3 — Statistical Significance

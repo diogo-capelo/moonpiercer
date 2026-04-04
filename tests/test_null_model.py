@@ -106,7 +106,9 @@ class TestNullModelBestScores:
             "lat_deg": [0.0, 0.0],
             "radius_m": [4.0, 4.0],
             "freshness_index": [0.5, 0.5],
-            "ellipticity": [1.0, 1.0],
+            "nls": [1.5, 1.5],
+            "rcr": [3.0, 3.001],
+            "ellipticity": [1.0, 1.001],
             "orientation_deg": [0.0, 0.0],
             "shape_reliable": [False, False],
             "depth_proxy": [0.5, 0.5],
@@ -114,7 +116,6 @@ class TestNullModelBestScores:
         from moonpiercer.config import ChordConfig
         config = ChordConfig(
             min_chord_sep_deg=30.0,
-            min_freshness=0.1,
             min_depth_proxy=0.1,
             search_cone_half_deg_unreliable=15.0,
         )
@@ -127,7 +128,9 @@ class TestNullModelBestScores:
             "lat_deg": [0.0, 0.0],
             "radius_m": [4.0, 4.0],
             "freshness_index": [0.5, 0.5],
-            "ellipticity": [1.0, 1.0],
+            "nls": [1.5, 1.5],
+            "rcr": [3.0, 3.001],
+            "ellipticity": [1.0, 1.001],
             "orientation_deg": [0.0, 0.0],
             "shape_reliable": [False, False],
             "depth_proxy": [0.5, 0.5],
@@ -135,7 +138,6 @@ class TestNullModelBestScores:
         from moonpiercer.config import ChordConfig
         config = ChordConfig(
             min_chord_sep_deg=30.0,
-            min_freshness=0.1,
             min_depth_proxy=0.1,
             search_cone_half_deg_unreliable=15.0,
         )
@@ -160,6 +162,8 @@ class TestNullModelBestScores:
             "lat_deg": np.zeros(n),
             "radius_m": np.full(n, 5.0),
             "freshness_index": np.full(n, 0.5),
+            "nls": np.full(n, 1.5),
+            "rcr": np.full(n, 3.0),
             "ellipticity": np.full(n, 1.0),
             "orientation_deg": np.zeros(n),
             "shape_reliable": np.full(n, False),
@@ -168,7 +172,6 @@ class TestNullModelBestScores:
         from moonpiercer.config import ChordConfig
         config = ChordConfig(
             min_chord_sep_deg=30.0,
-            min_freshness=0.1,
             min_depth_proxy=0.1,
             search_cone_half_deg_unreliable=15.0,
         )
@@ -183,6 +186,8 @@ class TestNullModelBestScores:
             "lat_deg": [0.0, 0.0],
             "radius_m": [4.0, 8.0],        # different radii
             "freshness_index": [0.5, 0.6],  # different FI
+            "nls": [1.5, 2.0],
+            "rcr": [3.0, 4.0],
             "ellipticity": [1.0, 1.0],
             "orientation_deg": [0.0, 0.0],
             "shape_reliable": [False, False],
@@ -191,7 +196,6 @@ class TestNullModelBestScores:
         from moonpiercer.config import ChordConfig
         config = ChordConfig(
             min_chord_sep_deg=30.0,
-            min_freshness=0.1,
             min_depth_proxy=0.1,
             search_cone_half_deg_unreliable=15.0,
         )
